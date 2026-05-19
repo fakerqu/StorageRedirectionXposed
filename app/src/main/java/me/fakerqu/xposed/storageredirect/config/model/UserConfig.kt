@@ -3,8 +3,8 @@ package me.fakerqu.xposed.storageredirect.config.model
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class StoredConfig(
-    val packageName: String,
+data class UserConfig(
+    val userId: Int,
     val enabled: Boolean,
-    val dirConfigs: List<DirConfig>
+    val packageConfigs: List<PackageConfig>
 )

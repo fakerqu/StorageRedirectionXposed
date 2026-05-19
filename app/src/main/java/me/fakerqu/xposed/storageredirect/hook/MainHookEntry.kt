@@ -3,12 +3,14 @@ package me.fakerqu.xposed.storageredirect.hook
 import android.annotation.SuppressLint
 import android.content.ContentResolver
 import android.content.Context
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.content.pm.ProviderInfo
 import android.database.Cursor
-import android.database.DatabaseUtils
 import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
+import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.Base64
 import android.util.Log
@@ -19,18 +21,38 @@ import androidx.core.database.getStringOrNull
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
+import me.fakerqu.xposed.storageredirect.config.ConfigConstants
+import me.fakerqu.xposed.storageredirect.config.model.UserConfig
+import me.fakerqu.xposed.storageredirect.config.model.PackageConfig
+import me.fakerqu.xposed.storageredirect.config.model.RuntimeConfig
 import net.sf.jsqlparser.expression.StringValue
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo
 import net.sf.jsqlparser.expression.operators.relational.LikeExpression
 import net.sf.jsqlparser.parser.CCJSqlParserUtil
 import net.sf.jsqlparser.schema.Column
 import net.sf.jsqlparser.util.deparser.ExpressionDeParser
+import java.util.concurrent.atomic.AtomicReference
 
 class MainHookEntry : XposedModule() {
+    data class ConfigSnapshot(
+        val version: Long,
+        val byPackage: Map<String, PackageConfig>,      // 只读 Map
+        val byUid: Map<Int, RuntimeConfig>,             // 只读 Map；无配置可不放进 map
+    ) {
+        companion object {
+            val EMPTY = ConfigSnapshot(0, emptyMap(), emptyMap())
+        }
+    }
+
+    private val configSnapshot = AtomicReference(ConfigSnapshot.EMPTY)
+    private lateinit var configPreferences: SharedPreferences
 
     @SuppressLint("PrivateApi")
     override fun onPackageReady(param: XposedModuleInterface.PackageReadyParam) {
-        super.onPackageLoaded(param)
+        super.onPackageReady(param)
         if (param.packageName == "com.android.providers.media.module") {
             try {
                 log(Log.INFO, "SRX", "install hook on ${param.packageName}")
@@ -38,7 +60,7 @@ class MainHookEntry : XposedModule() {
                     param.classLoader.loadClass("com.android.providers.media.MediaProvider")
                 val identityClass =
                     param.classLoader.loadClass("com.android.providers.media.LocalCallingIdentity")
-
+                configPreferences = getRemotePreferences(ConfigConstants.CONFIG_SHARED_PREFERENCE)
                 hook(
                     mediaProvider.getDeclaredMethod(
                         "attachInfo",
@@ -46,6 +68,12 @@ class MainHookEntry : XposedModule() {
                         ProviderInfo::class.java
                     )
                 ).intercept { chain ->
+                    configPreferences.registerOnSharedPreferenceChangeListener { preferences, key ->
+                        if (key == ConfigConstants.CONFIG_VERSION_KEY) {
+                            reloadConfig(chain.args[0] as Context, preferences.getLong(key, 0L))
+                        }
+                    }
+
                     val result = chain.proceed()
                     hookQueryInternal(param.classLoader)
                     result
@@ -146,7 +174,7 @@ class MainHookEntry : XposedModule() {
                     "SRX",
                     "hook shouldBypassFuseRestrictions, path=${chain.args[1]}, uid=${uid}, result=${result}"
                 )
-                if (uid == 10522 || uid == 10462) {
+                if (configSnapshot.get().byUid[uid] != null) {
                     return@intercept false
                 }
             } catch (e: Exception) {
@@ -188,7 +216,7 @@ class MainHookEntry : XposedModule() {
                     "SRX",
                     "hook isCallingPackageRequestingLegacy, uid=${uid}, result=${result}"
                 )
-                if (uid == 10522 || uid == 10462) {
+                if (configSnapshot.get().byUid[uid] != null) {
                     return@intercept false
                 }
             } catch (e: Exception) {
@@ -289,9 +317,9 @@ class MainHookEntry : XposedModule() {
                         queryArg.putString(
                             ContentResolver.QUERY_ARG_SQL_SELECTION, expression.accept(
                                 SqlPathReplacer(listOf("relative_path")) { originPath ->
-                                    if(originPath.startsWith("Android/data/media/me.fakerqu.test.storageredirection/")){
+                                    if (originPath.startsWith("Android/data/media/me.fakerqu.test.storageredirection/")) {
                                         listOf(originPath)
-                                    }else{
+                                    } else {
                                         listOf(
                                             originPath,
                                             "Android/data/media/me.fakerqu.test.storageredirection/sdcard_redirect/$originPath"
@@ -328,7 +356,7 @@ class MainHookEntry : XposedModule() {
                         ) { it.toString() }
                     },queryArg=${chain.args[2]} ， forSelf=${chain.args[4]}, uid=${uid}"
                 )
-                return@intercept if (uid == 10522 || uid == 10462) {
+                return@intercept if (configSnapshot.get().byUid[uid] != null) {
                     FilteredWrappedCursor.wrap(result, originProjection) {
                         "/storage/emulated/0/DCIM/ScreenShots/IMG_20201019_164644.jpg"
                     }
@@ -342,6 +370,36 @@ class MainHookEntry : XposedModule() {
             return@intercept result
         }
         //endregion
+    }
+
+    @OptIn(ExperimentalSerializationApi::class)
+    //TODO:处理多个package相同uid时，规则合并问题
+    private fun reloadConfig(context: Context, version: Long) {
+        openRemoteFile(ConfigConstants.CONFIG_FILE).use { descriptor ->
+            ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { inputStream ->
+                val userConfig = Json.decodeFromStream<UserConfig>(inputStream)
+                val packageConfigs = userConfig.packageConfigs.filter { it.enabled }
+                if (userConfig.enabled) {
+                    val pm = context.packageManager
+                    configSnapshot.set(
+                        ConfigSnapshot(
+                            version,
+                            packageConfigs.associateBy { it.packageName },
+                            packageConfigs.associate {
+                                val uid = pm.getPackageUid(
+                                    it.packageName,
+                                    PackageManager.MATCH_UNINSTALLED_PACKAGES
+                                )
+                                uid to RuntimeConfig(
+                                    uid,
+                                    pm.getNameForUid(uid) ?: it.packageName,
+                                    it.dirConfigs
+                                )
+                            }
+                        ))
+                }
+            }
+        }
     }
 
     private class SqlPathReplacer(

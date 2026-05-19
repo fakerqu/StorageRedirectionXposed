@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -47,6 +48,7 @@ dependencies {
     implementation(libs.miuix.icons)
     implementation(libs.miuix.navigation3.ui)
     implementation(libs.sql.parser)
+    implementation(libs.kotlin.serialization.json)
     compileOnly(libs.libxposed.api)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))

@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
+import android.os.UserHandle
 import android.provider.MediaStore
 import android.util.Base64
 import android.util.Log
@@ -25,9 +26,9 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import me.fakerqu.xposed.storageredirect.config.ConfigConstants
-import me.fakerqu.xposed.storageredirect.config.model.UserConfig
 import me.fakerqu.xposed.storageredirect.config.model.PackageConfig
 import me.fakerqu.xposed.storageredirect.config.model.RuntimeConfig
+import me.fakerqu.xposed.storageredirect.config.model.UserConfig
 import net.sf.jsqlparser.expression.StringValue
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo
 import net.sf.jsqlparser.expression.operators.relational.LikeExpression
@@ -68,6 +69,7 @@ class MainHookEntry : XposedModule() {
                         ProviderInfo::class.java
                     )
                 ).intercept { chain ->
+                    reloadConfig(chain.args[0] as Context, 0)
                     configPreferences.registerOnSharedPreferenceChangeListener { preferences, key ->
                         if (key == ConfigConstants.CONFIG_VERSION_KEY) {
                             reloadConfig(chain.args[0] as Context, preferences.getLong(key, 0L))
@@ -244,23 +246,25 @@ class MainHookEntry : XposedModule() {
             )
         ).intercept { chain: XposedInterface.Chain ->
             //region 1.检查一些无需hook的情况
+            val mCallingIdentity =
+                mCallingIdentityField.get(chain.thisObject) as ThreadLocal<*>
+            val uid = identityClass.getDeclaredField("uid").get(mCallingIdentity.get()) as Int?
+
+            //应用不需要重定向，跳过处理
+            val config = configSnapshot.get().byUid[uid] ?: return@intercept chain.proceed()
             try {
                 if (chain.args[4] == true) {
                     return@intercept chain.proceed()
                 }
-
-                val mCallingIdentity =
-                    mCallingIdentityField.get(chain.thisObject) as ThreadLocal<*>
                 //如果是picker方式访问，无需过滤结果
                 val callingPackageAllowedHidden =
                     isCallingPackageAllowedHiddenMethod(chain.thisObject)
                 val isCallerPhotoPicker = isCallerPhotoPickerMethod(chain.thisObject)
+
                 log(
                     Log.INFO,
                     "SRX",
-                    "query internal uid=${
-                        identityClass.getDeclaredField("uid").get(mCallingIdentity.get()) as Int?
-                    } allowHidden=$callingPackageAllowedHidden,isPhotoPicker=$isCallerPhotoPicker"
+                    "query internal uid=$uid allowHidden=$callingPackageAllowedHidden,isPhotoPicker=$isCallerPhotoPicker"
                 )
                 val isPickerUri =
                     isPickerUriMethod(chain.thisObject, chain.args[0]) as Boolean
@@ -316,15 +320,8 @@ class MainHookEntry : XposedModule() {
                         queryArg.remove(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS)
                         queryArg.putString(
                             ContentResolver.QUERY_ARG_SQL_SELECTION, expression.accept(
-                                SqlPathReplacer(listOf("relative_path")) { originPath ->
-                                    if (originPath.startsWith("Android/data/media/me.fakerqu.test.storageredirection/")) {
-                                        listOf(originPath)
-                                    } else {
-                                        listOf(
-                                            originPath,
-                                            "Android/data/media/me.fakerqu.test.storageredirection/sdcard_redirect/$originPath"
-                                        )
-                                    }
+                                SqlPathReplacer(listOf("relative_path", "_data")) { originPath ->
+                                    PathConverter.toFs(getUserId(uid ?: 0), config, originPath)
                                 }, null
                             ).toString()
                         )
@@ -339,13 +336,9 @@ class MainHookEntry : XposedModule() {
                 )
             }
             //endregion
-            val result = chain.proceedWith(newArg) as Cursor?
+            val result = chain.proceedWith(chain.thisObject, newArg) as Cursor?
             //region 3.拦截替换结果
             try {
-                val mCallingIdentity =
-                    mCallingIdentityField.get(chain.thisObject) as ThreadLocal<*>
-                val uid =
-                    identityClass.getDeclaredField("uid").get(mCallingIdentity.get()) as Int?
                 log(
                     Log.INFO,
                     "SRX",
@@ -357,8 +350,8 @@ class MainHookEntry : XposedModule() {
                     },queryArg=${chain.args[2]} ， forSelf=${chain.args[4]}, uid=${uid}"
                 )
                 return@intercept if (configSnapshot.get().byUid[uid] != null) {
-                    FilteredWrappedCursor.wrap(result, originProjection) {
-                        "/storage/emulated/0/DCIM/ScreenShots/IMG_20201019_164644.jpg"
+                    FilteredWrappedCursor.wrap(result, originProjection) { originPath ->
+                        PathConverter.toApp(getUserId(uid ?: 0), config, originPath)
                     }
                 } else {
                     result
@@ -397,6 +390,7 @@ class MainHookEntry : XposedModule() {
                                 )
                             }
                         ))
+                    log(Log.INFO, "SRX", "reload config ${configSnapshot.get()}")
                 }
             }
         }
@@ -494,6 +488,10 @@ class MainHookEntry : XposedModule() {
     }
 
     companion object {
+        fun getUserId(uid: Int): Int {
+            return uid / 100000
+        }
+
         fun bindSelection(
             selection: String,
             vararg selectionArgs: Any?

@@ -29,6 +29,7 @@ object PathConverter {
     private fun pathNeedRedirect(currentUserId: Int, path: String): Boolean {
         return (path.startsWith("/sdcard") && !path.startsWith("/sdcard/Android"))
                 || (path.startsWith("/storage/emulated/$currentUserId") && !path.startsWith("/storage/emulated/$currentUserId/Android"))
+                || (!path.startsWith("/") && !path.startsWith("Android"))
     }
 
 

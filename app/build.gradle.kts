@@ -47,8 +47,11 @@ dependencies {
     implementation(libs.miuix.ui)
     implementation(libs.miuix.icons)
     implementation(libs.miuix.navigation3.ui)
-    implementation(libs.sql.parser)
+    implementation(libs.sql.parser){
+        exclude(group = "org.openjdk.jmh", module = "jmh-core")
+    }
     implementation(libs.kotlin.serialization.json)
+    implementation(libs.libxposed.service)
     compileOnly(libs.libxposed.api)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))

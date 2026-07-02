@@ -1,6 +1,7 @@
 package me.fakerqu.xposed.storageredirect.hook
 
 import android.annotation.SuppressLint
+import android.util.Log
 import me.fakerqu.xposed.storageredirect.config.model.DirMode
 import me.fakerqu.xposed.storageredirect.config.model.RuntimeConfig
 import java.io.File
@@ -12,17 +13,35 @@ object PathConverter {
 
     const val PATH_FILTER_OUT = "path_filter_out"
     private val mediaPaths =
-        listOf(Path("DCIM"), Path("Pictures"), Path("Movies"), Path("Music"), Path("Audio"))
+        listOf(
+            Path("DCIM"),
+            Path("Pictures"),
+            Path("Movies"),
+            Path("Music"),
+            Path("Audio"),
+            Path("Podcasts"),
+            Path("Ringtones"),
+            Path("Alarms"),
+            Path("Notifications"),
+            Path("Recordings"),
+            Path("Audiobooks"),
+        )
+    private val filePaths = listOf(Path("Download"), Path("Documents"))
     private val redirectionPath = Path("sdcard_redirect")
 
-    private fun isMediaDir(dir: String): Boolean {
+    fun isMediaDir(dir: String): Boolean {
         val dirPath = Path(dir)
         return mediaPaths.any { dirPath.contains(it) }
     }
 
+    fun isFileDir(dir: String): Boolean {
+        val dirPath = Path(dir)
+        return filePaths.any { dirPath.contains(it) }
+    }
+
     private fun isRedirectionDir(dir: String): Boolean {
         val dirPath = Path(dir)
-        return redirectionPath.contains(dirPath)
+        return dirPath.contains(redirectionPath)
     }
 
     @SuppressLint("SdCardPath")
@@ -52,7 +71,7 @@ object PathConverter {
             "Android/media/${config.uidName}/sdcard_redirect/${relativePath}"
         } else {
             "Android/data/${config.uidName}/files/sdcard_redirect/${relativePath}"
-        }.trimEnd('/')
+        }
         val replacedPaths = when (matchedConfig?.mode) {
             DirMode.WRITE -> listOf(relativePath)
             DirMode.READ -> listOf(relativePath, replacedPath)
@@ -69,14 +88,15 @@ object PathConverter {
     fun toApp(currentUserId: Int, config: RuntimeConfig, redirectPath: String): String {
         val cleanPath = redirectPath.trim()
         if (cleanPath.isEmpty()) return cleanPath
-        val originFile = Path(redirectPath).normalize()
+        val originFile = Path(cleanPath).normalize()
 
         //white out文件，直接返回已过滤
         if (originFile.name.startsWith(".wh.")) {
             return PATH_FILTER_OUT
         }
         //并非为重定向后的路径
-        if (!isRedirectionDir(redirectPath)) {
+        if (!isRedirectionDir(cleanPath)) {
+            Log.i("SRX", "path convert to app not redirect path originPath=$cleanPath")
             //查一下，原始文件是否存在whiteout，存在则返回filter out
             val whiteOutFilePath = originFile.resolveSibling(".wh.${originFile.name}")
             val whiteOutBase =
@@ -97,6 +117,23 @@ object PathConverter {
             }
             return cleanPath
         } else {
+            //如果重定向后的路径不存在，直接从结果中过滤出去
+            Log.i("SRX", "path convert to app originPath=$cleanPath")
+            if (cleanPath.startsWith("/sdcard") || cleanPath.startsWith("/storage")) {
+                val redirectFile = File(cleanPath)
+                Log.i("SRX", "path convert to app redirect file exist=${redirectFile.exists()}")
+                if (!redirectFile.exists()) {
+                    return PATH_FILTER_OUT
+                }
+            } else {
+                val redirectFile = File("/storage/emulated/${currentUserId}/$cleanPath")
+                Log.i("SRX", "path convert to app redirect file exist=${redirectFile.exists()}")
+                if (!redirectFile.exists()) {
+                    return PATH_FILTER_OUT
+                }
+            }
+
+
             //将重定向路径增加的部分，替换为空
             val originPath =
                 if (cleanPath.contains("Android/media/${config.uidName}/sdcard_redirect") || cleanPath.contains(

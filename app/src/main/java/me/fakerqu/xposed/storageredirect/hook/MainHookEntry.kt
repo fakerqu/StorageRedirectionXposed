@@ -11,7 +11,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
-import android.os.UserHandle
 import android.provider.MediaStore
 import android.util.Base64
 import android.util.Log
@@ -26,6 +25,7 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import me.fakerqu.xposed.storageredirect.config.ConfigConstants
+import me.fakerqu.xposed.storageredirect.config.model.DirMode
 import me.fakerqu.xposed.storageredirect.config.model.PackageConfig
 import me.fakerqu.xposed.storageredirect.config.model.RuntimeConfig
 import me.fakerqu.xposed.storageredirect.config.model.UserConfig
@@ -147,6 +147,17 @@ class MainHookEntry : XposedModule() {
         }
         //endregion
 
+        hook(
+            mediaProvider.getDeclaredMethod(
+                "getFilesInDirectoryForFuse",
+                String::class.java,
+                Int::class.javaPrimitiveType
+            )
+        ).intercept { chain ->
+            val originResult = chain.proceed()
+            originResult
+        }
+
         //region shouldBypassFuseRestrictions
         //对于重定向的应用，bypass会导致直接读取或写入而不经过fuse检查，这里强制设置为false
         hook(
@@ -174,9 +185,28 @@ class MainHookEntry : XposedModule() {
                 log(
                     Log.INFO,
                     "SRX",
-                    "hook shouldBypassFuseRestrictions, path=${chain.args[1]}, uid=${uid}, result=${result}"
+                    "hook shouldBypassFuseRestrictions, path=${chain.args[1]}, uid=${uid}, origin result=${result}"
                 )
-                if (configSnapshot.get().byUid[uid] != null) {
+                //path为空，按照原有流程处理
+                val path = chain.args[1] as? String? ?: return@intercept result
+                val config = configSnapshot.get().byUid[uid]
+                val dirConfig = config?.dirConfigs?.filter {
+                    it.enabled && path.startsWith("/storage/emulated/${getUserId(uid ?: 0)}/${it.relativePath}")
+                }?.maxByOrNull {
+                    it.relativePath.length
+                }
+                log(
+                    Log.INFO,
+                    "SRX",
+                    "shouldBypassFuseRestrictions path=$path matched dir config=${dirConfig}"
+                )
+                //配置不为空（说明enabled）且不为W模式（透传模式），不能bypass
+                if (config != null && dirConfig?.mode != DirMode.WRITE) {
+                    log(
+                        Log.INFO,
+                        "SRX",
+                        "hook shouldBypassFuseRestrictions replace result path=${chain.args[1]}, uid=${uid}, result=false stack=${Exception().stackTraceToString()}"
+                    )
                     return@intercept false
                 }
             } catch (e: Exception) {
@@ -203,7 +233,7 @@ class MainHookEntry : XposedModule() {
                 "SRX",
                 "hook isCallingPackageRequestingLegacy"
             )
-            val result = chain.proceed()
+            val originResult = chain.proceed()
             try {
                 val mCallingIdentity =
                     chain.thisObject::class.java.getDeclaredField("mCallingIdentity")
@@ -216,7 +246,7 @@ class MainHookEntry : XposedModule() {
                 log(
                     Log.INFO,
                     "SRX",
-                    "hook isCallingPackageRequestingLegacy, uid=${uid}, result=${result}"
+                    "hook isCallingPackageRequestingLegacy, uid=${uid}, origin result=${originResult}"
                 )
                 if (configSnapshot.get().byUid[uid] != null) {
                     return@intercept false
@@ -229,7 +259,7 @@ class MainHookEntry : XposedModule() {
                     e
                 )
             }
-            result
+            originResult
         }
         //endregion
 
@@ -249,11 +279,21 @@ class MainHookEntry : XposedModule() {
             val mCallingIdentity =
                 mCallingIdentityField.get(chain.thisObject) as ThreadLocal<*>
             val uid = identityClass.getDeclaredField("uid").get(mCallingIdentity.get()) as Int?
+            log(
+                Log.INFO,
+                "SRX",
+                "start hook query internal with uid=$uid ,originParam=${chain.args.joinToString { it?.toString() ?: "null" }}"
+            )
 
             //应用不需要重定向，跳过处理
             val config = configSnapshot.get().byUid[uid] ?: return@intercept chain.proceed()
             try {
                 if (chain.args[4] == true) {
+                    log(
+                        Log.INFO,
+                        "SRX",
+                        "query internal bypass hook because of forSelf==true"
+                    )
                     return@intercept chain.proceed()
                 }
                 //如果是picker方式访问，无需过滤结果
@@ -269,7 +309,11 @@ class MainHookEntry : XposedModule() {
                 val isPickerUri =
                     isPickerUriMethod(chain.thisObject, chain.args[0]) as Boolean
                 if (isPickerUri) {
-                    log(Log.INFO, "SRX", "is picker uri ${chain.args[0]}")
+                    log(
+                        Log.INFO,
+                        "SRX",
+                        "query internal bypass hook is picker uri ${chain.args[0]}"
+                    )
                     return@intercept chain.proceed()
                 }
                 val table = localUriMatcherMatchMethod(
@@ -287,7 +331,11 @@ class MainHookEntry : XposedModule() {
                         905
                     ).contains(table)
                 ) {
-                    log(Log.INFO, "SRX", "is other uri ${chain.args[0]}-$table")
+                    log(
+                        Log.INFO,
+                        "SRX",
+                        "query internal bypass hook is other uri ${chain.args[0]}-$table"
+                    )
                     return@intercept chain.proceed()
                 }
             } catch (e: Exception) {
@@ -300,6 +348,7 @@ class MainHookEntry : XposedModule() {
             val newArg = chain.args.toTypedArray()
             try {
                 if (!originProjection.isNullOrEmpty() && !originProjection.contains(MediaStore.MediaColumns.DATA)) {
+                    log(Log.INFO, "SRX", "query internal replace projection _data not found")
                     newArg.apply {
                         this[1] = arrayOf(*originProjection, MediaStore.MediaColumns.DATA)
                     }
@@ -327,6 +376,11 @@ class MainHookEntry : XposedModule() {
                         )
                     }
                 }
+                log(
+                    Log.INFO,
+                    "SRX",
+                    "replaced query internal param=<${newArg.joinToString { it?.toString() ?: "null" }}>"
+                )
             } catch (e: Exception) {
                 log(
                     Log.ERROR,
@@ -339,16 +393,6 @@ class MainHookEntry : XposedModule() {
             val result = chain.proceedWith(chain.thisObject, newArg) as Cursor?
             //region 3.拦截替换结果
             try {
-                log(
-                    Log.INFO,
-                    "SRX",
-                    "hook query internal, uri=${chain.args[0]}, projection=${
-                        (chain.args[1] as Array<*>?)?.joinToString(
-                            prefix = "[",
-                            postfix = "]"
-                        ) { it.toString() }
-                    },queryArg=${chain.args[2]} ， forSelf=${chain.args[4]}, uid=${uid}"
-                )
                 return@intercept if (configSnapshot.get().byUid[uid] != null) {
                     FilteredWrappedCursor.wrap(result, originProjection) { originPath ->
                         PathConverter.toApp(getUserId(uid ?: 0), config, originPath)
@@ -359,6 +403,11 @@ class MainHookEntry : XposedModule() {
             } catch (e: Exception) {
                 log(Log.ERROR, "SRX", "failed hook query with exception", e)
             }
+            log(
+                Log.INFO,
+                "SRX",
+                "param=<${newArg.joinToString { it?.toString() ?: "null" }}>,filtered result = ${result?.dumpContent()}"
+            )
             //endregion
             return@intercept result
         }

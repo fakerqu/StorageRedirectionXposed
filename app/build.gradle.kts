@@ -12,12 +12,22 @@ android {
 
     defaultConfig {
         applicationId = "me.fakerqu.xposed.storageredirect"
-        minSdk = 31
+        minSdk = 36
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            //noinspection ChromeOsAbiSupport
+            abiFilters += "arm64-v8a"
+        }
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DANDROID_STL=c++_static")
+            }
+        }
     }
 
     buildTypes {
@@ -34,6 +44,14 @@ android {
     buildFeatures {
         compose = true
     }
+
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 }
 
 dependencies {
@@ -47,14 +65,13 @@ dependencies {
     implementation(libs.miuix.ui)
     implementation(libs.miuix.icons)
     implementation(libs.miuix.navigation3.ui)
-    implementation(libs.sql.parser){
+    implementation(libs.sql.parser) {
         exclude(group = "org.openjdk.jmh", module = "jmh-core")
     }
     implementation(libs.kotlin.serialization.json)
     implementation(libs.libxposed.service)
     compileOnly(libs.libxposed.api)
     testImplementation(libs.junit)
-    androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)

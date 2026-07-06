@@ -69,6 +69,13 @@ class MainHookEntry : XposedModule() {
                         ProviderInfo::class.java
                     )
                 ).intercept { chain ->
+                    // Initialize native hooks FIRST, so reloadConfig can push configs to native
+                    try {
+                        NativeHook.init(this@MainHookEntry)
+                    } catch (e: Exception) {
+                        log(Log.ERROR, "SRX", "NativeHook.init failed", e)
+                    }
+
                     reloadConfig(chain.args[0] as Context, 0)
                     configPreferences.registerOnSharedPreferenceChangeListener { preferences, key ->
                         if (key == ConfigConstants.CONFIG_VERSION_KEY) {
@@ -147,6 +154,9 @@ class MainHookEntry : XposedModule() {
         }
         //endregion
 
+        //region getFilesInDirectoryForFuse
+        //Android 16: String[] getFilesInDirectoryForFuse(String path, int uid)
+        //FUSE readdir 回调此方法，返回 String[] 文件名列表
         hook(
             mediaProvider.getDeclaredMethod(
                 "getFilesInDirectoryForFuse",
@@ -154,12 +164,32 @@ class MainHookEntry : XposedModule() {
                 Int::class.javaPrimitiveType
             )
         ).intercept { chain ->
-            val originResult = chain.proceed()
-            originResult
+            hookGetFilesInDirectoryForFuse(chain)
         }
+        //endregion
+
+        //region onFileLookupForFuse
+        //Android 16: FileLookupResult onFileLookupForFuse(String path, int uid, int forWrite)
+        //替代旧版 getFileForFuse，FUSE getattr 回调此方法
+        try {
+            hook(
+                mediaProvider.getDeclaredMethod(
+                    "onFileLookupForFuse",
+                    String::class.java,
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType
+                )
+            ).intercept { chain ->
+                log(Log.INFO, "SRX", "onFileLookupForFuse called: path=${chain.args[0]}, uid=${chain.args[1]}, forWrite=${chain.args[2]}")
+                hookOnFileLookupForFuse(chain)
+            }
+        } catch (e: NoSuchMethodException) {
+            log(Log.WARN, "SRX", "onFileLookupForFuse not found", e)
+        }
+        //endregion
 
         //region shouldBypassFuseRestrictions
-        //对于重定向的应用，bypass会导致直接读取或写入而不经过fuse检查，这里强制设置为false
+        //对于重定向的应用，保持 false，确保 FUSE 回调 getFilesInDirectoryForFuse
         hook(
             mediaProvider.getDeclaredMethod(
                 "shouldBypassFuseRestrictions",
@@ -167,11 +197,6 @@ class MainHookEntry : XposedModule() {
                 String::class.java
             )
         ).intercept { chain ->
-            log(
-                Log.INFO,
-                "SRX",
-                "hook shouldBypassFuseRestrictions, param=<${chain.args.joinToString { it.toString() }}>"
-            )
             val result = chain.proceed()
             try {
                 val mCallingIdentity =
@@ -182,42 +207,71 @@ class MainHookEntry : XposedModule() {
                 val uid =
                     identityClass.getDeclaredField("uid")
                         .get(mCallingIdentity.get()) as Int?
-                log(
-                    Log.INFO,
-                    "SRX",
-                    "hook shouldBypassFuseRestrictions, path=${chain.args[1]}, uid=${uid}, origin result=${result}"
-                )
-                //path为空，按照原有流程处理
                 val path = chain.args[1] as? String? ?: return@intercept result
                 val config = configSnapshot.get().byUid[uid]
-                val dirConfig = config?.dirConfigs?.filter {
-                    it.enabled && path.startsWith("/storage/emulated/${getUserId(uid ?: 0)}/${it.relativePath}")
-                }?.maxByOrNull {
-                    it.relativePath.length
-                }
-                log(
-                    Log.INFO,
-                    "SRX",
-                    "shouldBypassFuseRestrictions path=$path matched dir config=${dirConfig}"
-                )
-                //配置不为空（说明enabled）且不为W模式（透传模式），不能bypass
-                if (config != null && dirConfig?.mode != DirMode.WRITE) {
+                if (config != null && PathConverter.pathNeedRedirect(getUserId(uid ?: 0), path)) {
                     log(
                         Log.INFO,
                         "SRX",
-                        "hook shouldBypassFuseRestrictions replace result path=${chain.args[1]}, uid=${uid}, result=false stack=${Exception().stackTraceToString()}"
+                        "shouldBypassFuseRestrictions force false: path=$path, uid=$uid"
                     )
                     return@intercept false
                 }
             } catch (e: Exception) {
-                log(
-                    Log.ERROR,
-                    "SRX",
-                    "hook shouldBypassFuseRestrictions failed with exception",
-                    e
-                )
+                log(Log.ERROR, "SRX", "hook shouldBypassFuseRestrictions failed", e)
             }
             result
+        }
+        //endregion
+
+        //region isDirAccessAllowedForFuse
+        //Android 16: int isDirAccessAllowedForFuse(String path, int uid, int forWrite)
+        //返回 int: 0=允许, 非0=拒绝（errno 约定）
+        //对于重定向的应用：
+        //  - 根目录：允许，getFilesInDirectoryForFuse 会过滤 NONE 子目录
+        //  - READ/WRITE/NONE 模式目录：允许（NONE 模式由 getFilesInDirectoryForFuse 返回 Upper 内容）
+        try {
+            hook(
+                mediaProvider.getDeclaredMethod(
+                    "isDirAccessAllowedForFuse",
+                    String::class.java,
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType
+                )
+            ).intercept { chain ->
+                val path = chain.args[0] as? String? ?: return@intercept chain.proceed()
+                val uid = chain.args[1] as Int
+                try {
+                    val config = configSnapshot.get().byUid[uid]
+                    if (config != null) {
+                        val userId = getUserId(uid)
+                        if (PathConverter.pathNeedRedirect(userId, path)) {
+                            val mode = PathConverter.resolveMode(config, userId, path)
+                            // WRITE/READ: always allow access
+                            if (mode == DirMode.WRITE || mode == DirMode.READ) {
+                                return@intercept 0
+                            }
+                            // NONE mode: only allow if upper directory exists
+                            if (mode == DirMode.NONE) {
+                                val upperPath = PathConverter.getUpperPath(userId, config, path)
+                                val upperDir = java.io.File(upperPath)
+                                if (upperDir.exists()) {
+                                    return@intercept 0
+                                }
+                                // Upper doesn't exist → deny access
+                                log(Log.INFO, "SRX", "isDirAccessAllowedForFuse deny (NONE, no upper): path=$path, uid=$uid")
+                                return@intercept 2 // ENOENT
+                            }
+                        }
+                    }
+                    return@intercept chain.proceed()
+                } catch (e: Exception) {
+                    log(Log.ERROR, "SRX", "hook isDirAccessAllowedForFuse failed", e)
+                    return@intercept chain.proceed()
+                }
+            }
+        } catch (e: NoSuchMethodException) {
+            log(Log.WARN, "SRX", "isDirAccessAllowedForFuse method not found", e)
         }
         //endregion
 
@@ -394,8 +448,13 @@ class MainHookEntry : XposedModule() {
             //region 3.拦截替换结果
             try {
                 return@intercept if (configSnapshot.get().byUid[uid] != null) {
+                    val userId = getUserId(uid ?: 0)
                     FilteredWrappedCursor.wrap(result, originProjection) { originPath ->
-                        PathConverter.toApp(getUserId(uid ?: 0), config, originPath)
+                        PathConverter.toApp(
+                            userId, config, originPath,
+                            fileExists = { directPath -> java.io.File(directPath).exists() },
+                            isWhiteouted = { origin -> OverlayHelper.isWhiteouted(userId, config, origin) },
+                        )
                     }
                 } else {
                     result
@@ -412,7 +471,684 @@ class MainHookEntry : XposedModule() {
             return@intercept result
         }
         //endregion
+
+        hookInsert(mediaProvider)
+        hookDelete(mediaProvider)
+        hookUpdate(mediaProvider)
+        hookOpenFile(mediaProvider)
     }
+
+    /**
+     * hook MediaProvider.getFilesInDirectoryForFuse
+     *
+     * Android 16: String[] getFilesInDirectoryForFuse(String path, int uid)
+     * FUSE readdir 回调此方法，返回文件名数组。
+     *
+     * 根目录（/sdcard, /storage/emulated/0）：过滤掉 NONE 模式子目录，仅保留有配置的子目录
+     * w 模式：透传底层目录列表
+     * n 模式：返回 Upper 层目录列表（空则返回空数组）
+     * r 模式：合并 Upper + Lower 文件名列表，过滤 whiteout
+     */
+    @SuppressLint("PrivateApi")
+    private fun hookGetFilesInDirectoryForFuse(
+        chain: XposedInterface.Chain
+    ): Any? {
+        val path = chain.args[0] as String
+        val uid = chain.args[1] as Int
+        val config = configSnapshot.get().byUid[uid] ?: return chain.proceed()
+
+        val userId = getUserId(uid)
+        if (!PathConverter.pathNeedRedirect(userId, path)) return chain.proceed()
+
+        val mode = PathConverter.resolveMode(config, userId, path)
+        log(Log.INFO, "SRX", "getFilesInDirectoryForFuse path=$path uid=$uid mode=$mode")
+
+        return try {
+            when (mode) {
+                DirMode.WRITE -> {
+                    chain.proceed()
+                }
+
+                DirMode.NONE -> {
+                    // 判断是否是根目录
+                    val relativePath = PathConverter.toRelativePath(userId, path)
+                    if (relativePath.isEmpty()) {
+                        // 根目录：过滤 NONE 子目录 + 加入 Upper 层文件
+                        val originalNames = (chain.proceed() as? Array<*>)
+                            ?.mapNotNull { it as? String }
+                            ?: emptyList()
+                        val basePath = path.trimEnd('/')
+                        val filtered = originalNames.filter { name ->
+                            val childPath = "$basePath/$name"
+                            val childMode = PathConverter.resolveMode(config, userId, childPath)
+                            childMode != DirMode.NONE
+                        }.toMutableSet()
+                        // 从文件系统直接读取 Upper 层目录（不经过 MediaStore）
+                        val upperPath = PathConverter.getUpperPath(userId, config, path)
+                        val upperDir = java.io.File(upperPath)
+                        if (upperDir.exists()) {
+                            upperDir.listFiles()?.forEach { f ->
+                                if (!f.name.startsWith(".wh.")) {
+                                    filtered.add(f.name)
+                                }
+                            }
+                        }
+                        log(Log.INFO, "SRX", "getFilesInDirectoryForFuse root: original=${originalNames.size}, filtered=${filtered.size}")
+                        filtered.toTypedArray()
+                    } else {
+                        // NONE 模式子目录：直接从文件系统读取 Upper 层
+                        val upperPath = PathConverter.getUpperPath(userId, config, path)
+                        val upperDir = java.io.File(upperPath)
+                        if (upperDir.exists()) {
+                            val names = upperDir.listFiles()
+                                ?.map { it.name }
+                                ?.filter { !it.startsWith(".wh.") }
+                                ?: emptyList()
+                            log(Log.INFO, "SRX", "getFilesInDirectoryForFuse n-mode fs: upper=$upperPath, count=${names.size}")
+                            names.toTypedArray()
+                        } else {
+                            emptyArray<String>()
+                        }
+                    }
+                }
+
+                DirMode.READ -> {
+                    // r 模式：合并 Upper + Lower 文件名
+                    // 1. 获取 Lower 文件名列表（由 FUSE 原始方法返回）
+                    val lowerNames = (chain.proceed() as? Array<*>)
+                        ?.mapNotNull { it as? String }
+                        ?: emptyList()
+
+                    // 2. 获取 Upper 文件名列表（直通路径）
+                    val upperPath = PathConverter.getUpperPath(userId, config, path)
+                    val upperDir = java.io.File(upperPath)
+                    val upperNames = if (upperDir.exists()) {
+                        upperDir.listFiles()
+                            ?.map { it.name }
+                            ?: emptyList()
+                    } else {
+                        emptyList()
+                    }
+
+                    // 3. 合并：FUSE getdents 已能看到 Lower 层物理条目，
+                    //    chain.proceed() 是原始方法返回的列表，
+                    //    我们只需要补充 Upper 层独有的条目
+                    val whiteoutNames = upperNames
+                        .filter { it.startsWith(".wh.") }
+                        .map { it.removePrefix(".wh.") }
+                        .toSet()
+
+                    // 4. 构建 Lower 物理条目集合，用于判断 Upper 条目是否独有
+                    val lowerDirectPath = PathConverter.toDirectPath(userId, path)
+                    val lowerDir = java.io.File(lowerDirectPath)
+                    val lowerPhysicalNames = if (lowerDir.exists()) {
+                        lowerDir.listFiles()?.map { it.name }?.toSet() ?: emptySet()
+                    } else {
+                        emptySet()
+                    }
+
+                    val result = LinkedHashSet<String>()
+                    // chain.proceed() 的结果经过 MediaStore 过滤，可能不含子目录
+                    for (name in lowerNames) {
+                        if (name !in whiteoutNames) {
+                            result.add(name)
+                        }
+                    }
+                    // 只加 Upper 中非 whiteout 且不在 Lower 物理目录中的条目
+                    // Lower 物理目录中的条目已由 FUSE getdents 负责
+                    for (name in upperNames) {
+                        if (!name.startsWith(".wh.") && name !in lowerPhysicalNames && name !in result) {
+                            result.add(name)
+                        }
+                    }
+
+                    log(Log.INFO, "SRX", "getFilesInDirectoryForFuse r-mode: lower=${lowerNames.size}, upper=${upperNames.size}, whiteouts=${whiteoutNames.size}, merged=${result.size}")
+                    result.toTypedArray()
+                }
+            }
+        } catch (e: Exception) {
+            log(Log.ERROR, "SRX", "getFilesInDirectoryForFuse failed", e)
+            return chain.proceed()
+        }
+    }
+
+    /**
+     * hook MediaProvider.onFileLookupForFuse
+     *
+     * Android 16: FileLookupResult onFileLookupForFuse(String path, int uid, int forWrite)
+     * 替代旧版 getFileForFuse，FUSE getattr 回调此方法。
+     *
+     * 根据 mode 决定返回哪个层的文件信息：
+     * - w 模式：透传原始路径
+     * - n 模式：替换为 Upper 路径，先确保 Upper 文件在 MediaStore 中注册
+     * - r 模式：Upper 存在用 Upper（先确保注册）；不存在但被 whiteout → null；
+     *          Upper 不存在且无 whiteout → 透传原始路径
+     */
+    @SuppressLint("PrivateApi")
+    private fun hookOnFileLookupForFuse(chain: XposedInterface.Chain): Any? {
+        val path = chain.args[0] as String
+        val uid = chain.args[1] as Int
+        val config = configSnapshot.get().byUid[uid] ?: return chain.proceed()
+
+        val userId = getUserId(uid)
+        if (!PathConverter.pathNeedRedirect(userId, path)) return chain.proceed()
+
+        val mode = PathConverter.resolveMode(config, userId, path)
+        log(Log.INFO, "SRX", "onFileLookupForFuse path=$path uid=$uid mode=$mode")
+
+        return try {
+            when (mode) {
+                DirMode.WRITE -> {
+                    chain.proceed()
+                }
+
+                DirMode.NONE -> {
+                    // MediaProvider API 需要 FUSE 路径
+                    val upperFusePath = PathConverter.getUpperFusePath(userId, config, path)
+                    log(Log.INFO, "SRX", "onFileLookupForFuse n-mode upperFusePath=$upperFusePath")
+                    ensureFileInMediaStore(chain.thisObject, upperFusePath, uid)
+                    chain.proceedWith(chain.thisObject, arrayOf<Any?>(upperFusePath, uid, chain.args[2]))
+                }
+
+                DirMode.READ -> {
+                    if (OverlayHelper.upperExists(userId, config, path)) {
+                        // MediaProvider API 需要 FUSE 路径
+                        val upperFusePath = PathConverter.getUpperFusePath(userId, config, path)
+                        log(Log.INFO, "SRX", "onFileLookupForFuse r-mode use upper=$upperFusePath")
+                        ensureFileInMediaStore(chain.thisObject, upperFusePath, uid)
+                        chain.proceedWith(chain.thisObject, arrayOf<Any?>(upperFusePath, uid, chain.args[2]))
+                    } else if (OverlayHelper.isWhiteouted(userId, config, path)) {
+                        log(Log.INFO, "SRX", "onFileLookupForFuse r-mode whiteouted, return null: $path")
+                        null
+                    } else {
+                        log(Log.INFO, "SRX", "onFileLookupForFuse r-mode use lower: $path")
+                        chain.proceed()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            log(Log.ERROR, "SRX", "onFileLookupForFuse failed", e)
+            return chain.proceed()
+        }
+    }
+
+    /**
+     * 确保 Upper 层文件在 MediaStore 中注册。
+     *
+     * FUSE readdir 后会通过 onFileLookupForFuse 探测每个文件是否存在。
+     * 如果 Upper 层文件不在 MediaStore 中，探测返回 null，文件会被 FUSE 过滤。
+     * 调用 insertFileIfNecessaryForFuse 将文件注册到 MediaStore。
+     */
+    @SuppressLint("PrivateApi")
+    private fun ensureFileInMediaStore(mediaProvider: Any, path: String, uid: Int) {
+        try {
+            val file = java.io.File(path)
+            if (!file.exists()) return
+
+            val mediaProviderClass = mediaProvider.javaClass
+            val insertMethod = mediaProviderClass.getDeclaredMethod(
+                "insertFileIfNecessaryForFuse",
+                String::class.java,
+                Int::class.javaPrimitiveType
+            ).apply { isAccessible = true }
+
+            insertMethod.invoke(mediaProvider, path, uid)
+            log(Log.INFO, "SRX", "ensureFileInMediaStore: registered $path")
+        } catch (e: Exception) {
+            log(Log.WARN, "SRX", "ensureFileInMediaStore failed for $path", e)
+        }
+    }
+
+    /**
+     * hook MediaProvider.insert
+     *
+     * 文件创建时拦截，根据 mode 决定创建位置：
+     * - w 模式：透传
+     * - n 模式：修改 RELATIVE_PATH 指向 Upper
+     * - r 模式：先移除 whiteout，再修改 RELATIVE_PATH 指向 Upper
+     */
+    @SuppressLint("PrivateApi")
+    private fun hookInsert(mediaProviderClass: Class<*>) {
+        // insert(Uri uri, ContentValues values)
+        try {
+            hook(
+                mediaProviderClass.getDeclaredMethod(
+                    "insert",
+                    Uri::class.java,
+                    android.content.ContentValues::class.java
+                )
+            ).intercept { chain ->
+                hookInsertInternal(chain)
+            }
+        } catch (e: NoSuchMethodException) {
+            log(Log.WARN, "SRX", "insert(Uri, ContentValues) not found, trying Bundle variant", e)
+            // insert(Uri uri, ContentValues values, Bundle extras) — Android 13+
+            try {
+                hook(
+                    mediaProviderClass.getDeclaredMethod(
+                        "insert",
+                        Uri::class.java,
+                        android.content.ContentValues::class.java,
+                        Bundle::class.java
+                    )
+                ).intercept { chain ->
+                    hookInsertInternal(chain)
+                }
+            } catch (e2: NoSuchMethodException) {
+                log(Log.WARN, "SRX", "insert method not found, skipping hook", e2)
+            }
+        }
+    }
+
+    @SuppressLint("PrivateApi")
+    private fun hookInsertInternal(chain: XposedInterface.Chain): Any? {
+        val uid = getCallingUid(chain.thisObject)
+        val config = configSnapshot.get().byUid[uid] ?: return chain.proceed()
+
+        // 无配置，透传
+
+        try {
+            val values = chain.args[1] as? android.content.ContentValues ?: return chain.proceed()
+            val userId = getUserId(uid)
+
+            // 获取应用请求的相对路径
+            val relativePath = values.get(MediaStore.MediaColumns.RELATIVE_PATH) as? String
+            val displayName = values.get(MediaStore.MediaColumns.DISPLAY_NAME) as? String
+
+            if (relativePath == null && displayName == null) return chain.proceed()
+
+            // 构建完整路径用于 mode 判断
+            val fullPath = buildFullPath(userId, relativePath, displayName)
+            if (!PathConverter.pathNeedRedirect(userId, fullPath)) return chain.proceed()
+
+            val mode = PathConverter.resolveMode(config, userId, fullPath)
+            log(Log.INFO, "SRX", "insert path=$fullPath mode=$mode")
+
+            return when (mode) {
+                DirMode.WRITE -> {
+                    // w 模式：透传
+                    chain.proceed()
+                }
+
+                DirMode.READ, DirMode.NONE -> {
+                    // r/n 模式：重定向到 Upper
+                    // r 模式需先移除 whiteout
+                    if (mode == DirMode.READ) {
+                        OverlayHelper.removeWhiteout(userId, config, fullPath)
+                    }
+
+                    // 修改 RELATIVE_PATH 指向 Upper
+                    val upperRelativePath = buildUpperRelativePath(config, relativePath)
+                    if (upperRelativePath != null) {
+                        values.put(MediaStore.MediaColumns.RELATIVE_PATH, upperRelativePath)
+                        log(Log.INFO, "SRX", "insert redirected RELATIVE_PATH=$upperRelativePath")
+                    }
+                    chain.proceed()
+                }
+            }
+        } catch (e: Exception) {
+            log(Log.ERROR, "SRX", "insert hook failed", e)
+            return chain.proceed()
+        }
+    }
+
+    /**
+     * hook MediaProvider.delete
+     *
+     * 删除保护：
+     * - w 模式：创建 whiteout，不删除底层文件，返回 1
+     * - r 模式：Upper 有实体删 Upper；Lower 有同名创建 whiteout；返回 1
+     * - n 模式：透传（删除 Upper 文件）
+     */
+    @SuppressLint("PrivateApi")
+    private fun hookDelete(mediaProviderClass: Class<*>) {
+        try {
+            hook(
+                mediaProviderClass.getDeclaredMethod(
+                    "delete",
+                    Uri::class.java,
+                    String::class.java,
+                    Array<String>::class.java
+                )
+            ).intercept { chain ->
+                hookDeleteInternal(chain)
+            }
+        } catch (e: NoSuchMethodException) {
+            log(Log.WARN, "SRX", "delete method not found, skipping hook", e)
+        }
+    }
+
+    @SuppressLint("PrivateApi")
+    private fun hookDeleteInternal(chain: XposedInterface.Chain): Any? {
+        val uid = getCallingUid(chain.thisObject)
+        val config = configSnapshot.get().byUid[uid] ?: return chain.proceed()
+
+        // 无配置，透传
+
+        try {
+            val uri = chain.args[0] as Uri
+            val userId = getUserId(uid)
+
+            // 从 URI 提取文件路径
+            // delete 的 selection 可能针对多条记录，这里只处理单条 URI（带 id）的情况
+            val dataPath = getDataPathFromUri(chain.thisObject, uri)
+            if (dataPath == null || !PathConverter.pathNeedRedirect(userId, dataPath)) return chain.proceed()
+
+            val mode = PathConverter.resolveMode(config, userId, dataPath)
+            log(Log.INFO, "SRX", "delete path=$dataPath mode=$mode")
+
+            return when (mode) {
+                DirMode.WRITE -> {
+                    // w 模式：创建 whiteout，不删除底层文件
+                    OverlayHelper.createWhiteout(userId, config, dataPath)
+                    // 返回 1 表示删除成功
+                    1
+                }
+
+                DirMode.READ -> {
+                    // r 模式：
+                    if (OverlayHelper.upperExists(userId, config, dataPath)) {
+                        // Upper 有实体 → 删除 Upper 实体（直通路径绕过 FUSE）
+                        val upperPath = PathConverter.getUpperPath(userId, config, dataPath)
+                        java.io.File(upperPath).delete()
+                    }
+                    // 如果 Lower 也存在同名文件 → 创建 whiteout
+                    val lowerFile = java.io.File(dataPath)
+                    if (lowerFile.exists()) {
+                        OverlayHelper.createWhiteout(userId, config, dataPath)
+                    }
+                    // 返回 1 表示删除成功
+                    1
+                }
+
+                DirMode.NONE -> {
+                    // n 模式：透传（删除 Upper 文件）
+                    chain.proceed()
+                }
+            }
+        } catch (e: Exception) {
+            log(Log.ERROR, "SRX", "delete hook failed", e)
+            return chain.proceed()
+        }
+    }
+
+    /**
+     * hook MediaProvider.update
+     *
+     * 拦截修改和重命名操作：
+     * - 修改 RELATIVE_PATH/DISPLAY_NAME（重命名/移动）：
+     *   r 模式先 copy-up，检查跨 mode 限制；w→r 返回 -1 (EACCES)；跨区域返回 -1 (EXDEV)
+     * - 其他字段修改：r 模式需先 copy-up
+     */
+    @SuppressLint("PrivateApi")
+    private fun hookUpdate(mediaProviderClass: Class<*>) {
+        try {
+            hook(
+                mediaProviderClass.getDeclaredMethod(
+                    "update",
+                    Uri::class.java,
+                    android.content.ContentValues::class.java,
+                    String::class.java,
+                    Array<String>::class.java
+                )
+            ).intercept { chain ->
+                hookUpdateInternal(chain)
+            }
+        } catch (e: NoSuchMethodException) {
+            log(Log.WARN, "SRX", "update method not found, skipping hook", e)
+        }
+    }
+
+    @SuppressLint("PrivateApi")
+    private fun hookUpdateInternal(chain: XposedInterface.Chain): Any? {
+        val uid = getCallingUid(chain.thisObject)
+        val config = configSnapshot.get().byUid[uid] ?: return chain.proceed()
+
+        // 无配置，透传
+
+        try {
+            val uri = chain.args[0] as Uri
+            val values = chain.args[1] as? android.content.ContentValues ?: return chain.proceed()
+            val userId = getUserId(uid)
+
+            val dataPath = getDataPathFromUri(chain.thisObject, uri)
+            if (dataPath == null || !PathConverter.pathNeedRedirect(userId, dataPath)) return chain.proceed()
+
+            val sourceMode = PathConverter.resolveMode(config, userId, dataPath)
+            log(Log.INFO, "SRX", "update path=$dataPath sourceMode=$sourceMode")
+
+            // 检查是否为重命名/移动操作
+            val newRelativePath = values.get(MediaStore.MediaColumns.RELATIVE_PATH) as? String
+            val newDisplayName = values.get(MediaStore.MediaColumns.DISPLAY_NAME) as? String
+
+            if (newRelativePath != null || newDisplayName != null) {
+                // 重命名/移动操作
+                val targetPath = buildFullPath(
+                    userId,
+                    newRelativePath ?: (dataPath.substringBeforeLast('/').substringAfter("/storage/emulated/$userId/")),
+                    newDisplayName ?: dataPath.substringAfterLast('/')
+                )
+
+                if (PathConverter.pathNeedRedirect(userId, targetPath)) {
+                    val targetMode = PathConverter.resolveMode(config, userId, targetPath)
+
+                    // w → r 禁止
+                    if (sourceMode == DirMode.WRITE && targetMode == DirMode.READ) {
+                        log(Log.INFO, "SRX", "update w->r denied (EACCES)")
+                        return 0
+                    }
+
+                    // 跨 mode 区域（仅 r 模式有跨区域限制）
+                    if (sourceMode == DirMode.READ && targetMode != DirMode.READ) {
+                        log(Log.INFO, "SRX", "update cross-region denied (EXDEV): $sourceMode -> $targetMode")
+                        return 0
+                    }
+
+                    // r 模式：先 copy-up 源文件
+                    if (sourceMode == DirMode.READ) {
+                        OverlayHelper.copyUp(userId, config, dataPath)
+                        // 修改目标路径指向 Upper
+                        val upperRelativePath = buildUpperRelativePath(config, newRelativePath)
+                        if (upperRelativePath != null) {
+                            values.put(MediaStore.MediaColumns.RELATIVE_PATH, upperRelativePath)
+                        }
+                    }
+                }
+            } else {
+                // 普通字段修改
+                if (sourceMode == DirMode.READ) {
+                    // r 模式需先 copy-up
+                    OverlayHelper.copyUp(userId, config, dataPath)
+                }
+            }
+
+            return chain.proceed()
+        } catch (e: Exception) {
+            log(Log.ERROR, "SRX", "update hook failed", e)
+            return chain.proceed()
+        }
+    }
+
+    /**
+     * hook MediaProvider.openFile / openFileCommon
+     *
+     * 文件描述符打开时拦截：
+     * - w 模式：透传
+     * - n 模式：确保 Upper 存在，返回 Upper 文件 FD
+     * - r 模式：写操作先 copy-up；Upper 存在用 Upper，否则用 Lower
+     */
+    @SuppressLint("PrivateApi")
+    private fun hookOpenFile(mediaProviderClass: Class<*>) {
+        // openFile(Uri uri, String mode)
+        try {
+            hook(
+                mediaProviderClass.getDeclaredMethod(
+                    "openFile",
+                    Uri::class.java,
+                    String::class.java
+                )
+            ).intercept { chain ->
+                hookOpenFileInternal(chain)
+            }
+        } catch (e: NoSuchMethodException) {
+            log(Log.WARN, "SRX", "openFile method not found, skipping hook", e)
+        }
+
+        // openTypedAssetFile(Uri uri, String mimeTypeFilter, Bundle opts)
+        try {
+            hook(
+                mediaProviderClass.getDeclaredMethod(
+                    "openTypedAssetFile",
+                    Uri::class.java,
+                    String::class.java,
+                    Bundle::class.java,
+                    CancellationSignal::class.java
+                )
+            ).intercept { chain ->
+                hookOpenFileInternal(chain)
+            }
+        } catch (e: NoSuchMethodException) {
+            log(Log.WARN, "SRX", "openTypedAssetFile method not found, skipping hook", e)
+        }
+    }
+
+    @SuppressLint("PrivateApi")
+    private fun hookOpenFileInternal(chain: XposedInterface.Chain): Any? {
+        val uid = getCallingUid(chain.thisObject)
+        val config = configSnapshot.get().byUid[uid] ?: return chain.proceed()
+
+        // 无配置，透传
+
+        try {
+            val uri = chain.args[0] as Uri
+            val userId = getUserId(uid)
+            val openMode = (chain.args.getOrNull(1) as? String) ?: "r"
+
+            val dataPath = getDataPathFromUri(chain.thisObject, uri)
+            if (dataPath == null || !PathConverter.pathNeedRedirect(userId, dataPath)) return chain.proceed()
+
+            val mode = PathConverter.resolveMode(config, userId, dataPath)
+            log(Log.INFO, "SRX", "openFile path=$dataPath mode=$mode openMode=$openMode")
+
+            return when (mode) {
+                DirMode.WRITE -> {
+                    // w 模式：透传
+                    chain.proceed()
+                }
+
+                DirMode.READ -> {
+                    // r 模式
+                    if (openMode.contains("w") || openMode.contains("rw")) {
+                        // 写操作 → 先 copy-up
+                        OverlayHelper.copyUp(userId, config, dataPath)
+                    }
+                    // Upper 存在 → 透传（文件已在 Upper，FUSE 层会正确处理）
+                    // Upper 不存在 → 透传（读 Lower）
+                    chain.proceed()
+                }
+
+                DirMode.NONE -> {
+                    // n 模式：确保 Upper 目录存在（使用直通路径绕过 FUSE）
+                    val upperPath = PathConverter.getUpperPath(userId, config, dataPath)
+                    OverlayHelper.ensureUpperDir(upperPath)
+                    // 透传，FUSE 层通过 getFileForFuse 已经会重定向到 Upper
+                    chain.proceed()
+                }
+            }
+        } catch (e: Exception) {
+            log(Log.ERROR, "SRX", "openFile hook failed", e)
+            return chain.proceed()
+        }
+    }
+
+    //region 辅助方法
+
+    /**
+     * 从 MediaProvider 的 ThreadLocal 中获取当前调用者的 UID。
+     */
+    @SuppressLint("PrivateApi")
+    private fun getCallingUid(thisObject: Any): Int {
+        return try {
+            val identityClass =
+                thisObject::class.java.classLoader!!.loadClass("com.android.providers.media.LocalCallingIdentity")
+            val mCallingIdentityField =
+                thisObject::class.java.getDeclaredField("mCallingIdentity").apply {
+                    isAccessible = true
+                }
+            val threadLocal = mCallingIdentityField.get(thisObject) as ThreadLocal<*>
+            val identity = threadLocal.get() ?: return -1
+            identityClass.getDeclaredField("uid").get(identity) as Int
+        } catch (e: Exception) {
+            log(Log.ERROR, "SRX", "getCallingUid failed", e)
+            -1
+        }
+    }
+
+    /**
+     * 从 URI 查询 _data 路径。
+     */
+    @SuppressLint("PrivateApi")
+    private fun getDataPathFromUri(
+        thisObject: Any,
+        uri: Uri
+    ): String? {
+        return try {
+            // 通过 query 查询 _data 列
+            val queryMethod = thisObject::class.java.getDeclaredMethod(
+                "query",
+                Uri::class.java,
+                Array<String>::class.java,
+                Bundle::class.java,
+                CancellationSignal::class.java
+            )
+            queryMethod.isAccessible = true
+            val cursor = queryMethod.invoke(
+                thisObject,
+                uri,
+                arrayOf(MediaStore.MediaColumns.DATA),
+                null,
+                null
+            ) as? Cursor
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    it.getString(0)
+                } else {
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            log(Log.ERROR, "SRX", "getDataPathFromUri failed", e)
+            null
+        }
+    }
+
+    /**
+     * 根据 relativePath 和 displayName 构建完整路径。
+     */
+    @SuppressLint("SdCardPath")
+    private fun buildFullPath(userId: Int, relativePath: String?, displayName: String?): String {
+        val base = "/storage/emulated/$userId"
+        val parts = mutableListOf<String>()
+        if (!relativePath.isNullOrEmpty()) parts.add(relativePath.trimEnd('/'))
+        if (!displayName.isNullOrEmpty()) parts.add(displayName)
+        return "$base/${parts.joinToString("/")}"
+    }
+
+    /**
+     * 构建 Upper 层的 RELATIVE_PATH。
+     * 统一映射到 Android/media/<pkg>/sdcard_redirect/ 以获得 MediaStore 支持
+     */
+    private fun buildUpperRelativePath(config: RuntimeConfig, relativePath: String?): String? {
+        if (relativePath == null) return null
+        val basePath = PathConverter.getRedirectBase(config)
+        return if (relativePath.isNotEmpty()) {
+            "$basePath/${relativePath.trimStart('/')}"
+        } else {
+            "$basePath/"
+        }
+    }
+
+    //endregion
 
     @OptIn(ExperimentalSerializationApi::class)
     //TODO:处理多个package相同uid时，规则合并问题
@@ -440,6 +1176,13 @@ class MainHookEntry : XposedModule() {
                             }
                         ))
                     log(Log.INFO, "SRX", "reload config ${configSnapshot.get()}")
+
+                    // Push all configs to native layer
+                    NativeHook.clearAllConfigs()
+                    configSnapshot.get().byUid.forEach { (uid, config) ->
+                        val userId = getUserId(uid)
+                        NativeHook.setUidConfig(uid, config, userId)
+                    }
                 }
             }
         }

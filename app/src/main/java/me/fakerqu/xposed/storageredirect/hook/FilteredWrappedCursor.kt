@@ -56,6 +56,9 @@ class FilteredWrappedCursor private constructor(
     }
 
     private val pathIndex: Int = originCursor.getPathColumnIndex()
+    private val relativePathIndex: Int = originCursor.columnNames.indexOfFirst {
+        it == "relative_path"
+    }
 
     private var mPos = -1
 
@@ -67,12 +70,27 @@ class FilteredWrappedCursor private constructor(
 
     override fun getCount(): Int = filteredPath.size
 
-    override fun getString(index: Int): String? = if (index == pathIndex) {
-        val new = filteredPath[originCursor.position]
-        Log.i("SRX", "redirect to $new index=$index")
-        new
-    } else {
-        originCursor.getString(index)
+    override fun getString(index: Int): String? {
+        // _data 列：返回转换后的路径
+        if (index == pathIndex) {
+            val new = filteredPath[originCursor.position]
+            Log.i("SRX", "redirect to $new index=$index")
+            return new
+        }
+        // relative_path 列：从转换后的 _data 路径推导出 relative_path
+        if (index == relativePathIndex && relativePathIndex != -1) {
+            val dataPath = filteredPath[originCursor.position]
+            if (dataPath != null) {
+                // _data 格式: /storage/emulated/0/Pictures/xxx.jpg
+                // relative_path 格式: Pictures/
+                val relativePath = dataPath
+                    .substringAfter("/storage/emulated/")
+                    .substringAfter('/')
+                    .substringBeforeLast('/')
+                return if (relativePath.isNotEmpty()) "$relativePath/" else ""
+            }
+        }
+        return originCursor.getString(index)
     }
 
     override fun getNotificationUris(): List<Uri?>? {

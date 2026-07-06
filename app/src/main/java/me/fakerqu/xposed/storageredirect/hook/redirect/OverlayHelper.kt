@@ -1,4 +1,4 @@
-package me.fakerqu.xposed.storageredirect.hook
+package me.fakerqu.xposed.storageredirect.hook.redirect
 
 import android.annotation.SuppressLint
 import android.util.Log

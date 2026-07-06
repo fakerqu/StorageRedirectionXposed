@@ -1,4 +1,4 @@
-package me.fakerqu.xposed.storageredirect.hook
+package me.fakerqu.xposed.storageredirect.hook.util
 
 import android.content.ContentResolver
 import android.database.Cursor
@@ -7,6 +7,7 @@ import android.util.Log
 import android.util.SparseArray
 import androidx.core.database.getStringOrNull
 import androidx.core.util.size
+import me.fakerqu.xposed.storageredirect.hook.redirect.PathConverter
 
 class FilteredWrappedCursor private constructor(
     private val originCursor: Cursor,

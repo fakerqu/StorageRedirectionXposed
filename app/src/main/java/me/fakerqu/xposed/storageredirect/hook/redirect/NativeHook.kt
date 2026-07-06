@@ -1,4 +1,4 @@
-package me.fakerqu.xposed.storageredirect.hook
+package me.fakerqu.xposed.storageredirect.hook.redirect
 
 import android.util.Log
 import io.github.libxposed.api.XposedModule

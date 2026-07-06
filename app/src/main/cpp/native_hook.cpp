@@ -336,7 +336,7 @@ static int hook_fstatat(int dirfd, const char* path, struct stat* buf, int flags
 extern "C" {
 
 JNIEXPORT void JNICALL
-Java_me_fakerqu_xposed_storageredirect_hook_NativeHook_nativeSetUidConfig(
+Java_me_fakerqu_xposed_storageredirect_hook_redirect_NativeHook_nativeSetUidConfig(
         JNIEnv* env, jclass /*clazz*/, jint uid,
         jstring jUidName, jint userId,
         jobjectArray jRelativePaths, jintArray jModes) {
@@ -376,7 +376,7 @@ Java_me_fakerqu_xposed_storageredirect_hook_NativeHook_nativeSetUidConfig(
 }
 
 JNIEXPORT void JNICALL
-Java_me_fakerqu_xposed_storageredirect_hook_NativeHook_nativeRemoveUidConfig(
+Java_me_fakerqu_xposed_storageredirect_hook_redirect_NativeHook_nativeRemoveUidConfig(
         JNIEnv* /*env*/, jclass /*clazz*/, jint uid) {
     std::lock_guard<std::mutex> lock(g_config_mutex);
     g_configs.erase(uid);
@@ -384,7 +384,7 @@ Java_me_fakerqu_xposed_storageredirect_hook_NativeHook_nativeRemoveUidConfig(
 }
 
 JNIEXPORT void JNICALL
-Java_me_fakerqu_xposed_storageredirect_hook_NativeHook_nativeClearAllConfigs(
+Java_me_fakerqu_xposed_storageredirect_hook_redirect_NativeHook_nativeClearAllConfigs(
         JNIEnv* /*env*/, jclass /*clazz*/) {
     std::lock_guard<std::mutex> lock(g_config_mutex);
     g_configs.clear();

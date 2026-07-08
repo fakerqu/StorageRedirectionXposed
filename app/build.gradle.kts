@@ -64,6 +64,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.miuix.ui)
     implementation(libs.miuix.icons)
+    implementation(libs.miuix.preference)
     implementation(libs.miuix.navigation3.ui)
     implementation(libs.sql.parser) {
         exclude(group = "org.openjdk.jmh", module = "jmh-core")

@@ -10,7 +10,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
-import kotlinx.serialization.json.encodeToStream
 import me.fakerqu.xposed.storageredirect.XposedServiceManager
 import me.fakerqu.xposed.storageredirect.config.model.DirConfig
 import me.fakerqu.xposed.storageredirect.config.model.PackageConfig
@@ -78,10 +77,15 @@ object ConfigManager {
     @OptIn(ExperimentalSerializationApi::class)
     suspend fun reload() = withContext(Dispatchers.IO) {
         val service = requireService()
-        service.openRemoteFile(ConfigConstants.CONFIG_FILE).use { pfd ->
-            ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
-                _currentConfig.value = json.decodeFromStream<UserConfig>(input)
+        _currentConfig.value = runCatching {
+            service.openRemoteFile(ConfigConstants.CONFIG_FILE).use { pfd ->
+                ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
+                    json.decodeFromStream<UserConfig>(input)
+                }
             }
+        }.getOrElse {
+            // 配置文件不存在或格式错误时使用默认空配置
+            UserConfig(userId = 0, enabled = true, packageConfigs = emptyList())
         }
     }
 
@@ -98,10 +102,18 @@ object ConfigManager {
     private suspend fun save() = withContext(Dispatchers.IO) {
         val service = requireService()
         val config = _currentConfig.value ?: error("ConfigManager.save() called before load()")
+        // 先编码为 byte[]，确保知道确切的写入长度
+        val jsonBytes = json.encodeToString(UserConfig.serializer(), config).toByteArray()
         service.openRemoteFile(ConfigConstants.CONFIG_FILE).use { pfd ->
-            ParcelFileDescriptor.AutoCloseOutputStream(pfd).use { output ->
-                json.encodeToStream(config, output)
+            val output = ParcelFileDescriptor.AutoCloseOutputStream(pfd)
+            output.write(jsonBytes)
+            output.flush()
+            // 先截断文件到实际写入长度，再关闭流
+            // （关闭 AutoCloseOutputStream 会同时关闭 PFD，必须在关闭前截断）
+            runCatching {
+                android.system.Os.ftruncate(pfd.fileDescriptor, jsonBytes.size.toLong())
             }
+            output.close()
         }
         // Bump 版本号，通知 Hook 端重新加载配置
         val prefs = service.getRemotePreferences(ConfigConstants.CONFIG_SHARED_PREFERENCE)
@@ -257,7 +269,9 @@ object ConfigManager {
         if (_currentConfig.value == null) {
             reload()
         }
-        val oldConfig = _currentConfig.value ?: error("Failed to load config")
+        val oldConfig = _currentConfig.value ?: UserConfig(
+            userId = 0, enabled = true, packageConfigs = emptyList()
+        )
         val newConfig = block(oldConfig)
         _currentConfig.value = newConfig
         save()

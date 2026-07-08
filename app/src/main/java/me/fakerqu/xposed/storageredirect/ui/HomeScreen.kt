@@ -1,135 +1,209 @@
 package me.fakerqu.xposed.storageredirect.ui
 
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
-import kotlinx.coroutines.flow.collectLatest
-import me.fakerqu.xposed.storageredirect.XposedServiceManager
-import me.fakerqu.xposed.storageredirect.config.ConfigManager
-import top.yukonga.miuix.kmp.basic.FloatingNavigationBar
-import top.yukonga.miuix.kmp.basic.FloatingNavigationBarItem
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import top.yukonga.miuix.kmp.basic.BasicComponent
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.basic.rememberTopAppBarState
+import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Home
-import top.yukonga.miuix.kmp.icon.extended.ListView
+import top.yukonga.miuix.kmp.icon.basic.Check
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
- * 应用入口页面
+ * 主页完整页面（含 Scaffold / TopAppBar / ViewModel）
  *
- * 统一的 Scaffold + TopAppBar，通过底部 FloatingNavigationBar 在页面间切换。
- * LSP 状态在此持有，避免页面切换时丢失。
+ * 自包含页面，由 HomeScreen 的 NavEntry 调用。
+ *
+ * @param bottomBarPadding 底部导航栏高度
  */
 @Composable
-fun HomeScreen() {
-    var currentTab by rememberSaveable { mutableIntStateOf(0) }
-    val scrollBehavior = MiuixScrollBehavior(state = rememberTopAppBarState())
-
-    // ---- AppList 共享状态 ----
-    val appListState = remember { AppListState() }
-
-    // ---- LSP 状态（提升到 HomeScreen，避免页面切换丢失）----
-    var isHooked by remember { mutableStateOf(false) }
-    var lspApiVersion by remember { mutableStateOf("—") }
-    var frameworkName by remember { mutableStateOf("—") }
-    var frameworkVersion by remember { mutableStateOf("—") }
-
-    LaunchedEffect(Unit) {
-        XposedServiceManager.service.collectLatest { service ->
-            if (service != null) {
-                isHooked = true
-                lspApiVersion = "API ${service.apiVersion}"
-                frameworkName = service.frameworkName
-                frameworkVersion = "${service.frameworkVersion} (${service.frameworkVersionCode})"
-
-                // 通过 ConfigManager 读取已配置的包名列表
-                runCatching {
-                    appListState.configuredPackages =
-                        ConfigManager.getConfiguredPackageNames()
-                }
-            } else {
-                isHooked = false
-            }
-        }
-    }
-
-    val tabs = listOf(
-        TabItem("主页", MiuixIcons.Home),
-        TabItem("应用", MiuixIcons.ListView),
-    )
+fun HomePage(
+    bottomBarPadding: Dp = 0.dp,
+) {
+    val viewModel: HomeViewModel = viewModel()
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val scrollBehavior = MiuixScrollBehavior(rememberTopAppBarState())
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
-            when (currentTab) {
-                0 -> TopAppBar(
-                    title = "Storage Redirect",
-                    largeTitle = "Storage Redirect",
-                    scrollBehavior = scrollBehavior,
-                )
+            TopAppBar(
+                title = "Storage Redirect",
+                largeTitle = "Storage Redirect",
+                scrollBehavior = scrollBehavior,
+            )
+        },
+    ) { padding ->
+        HomeScreen(
+            modifier = Modifier.padding(top = padding.calculateTopPadding()),
+            scrollBehavior = scrollBehavior,
+            state = state,
+            bottomBarPadding = bottomBarPadding,
+        )
+    }
+}
 
-                1 -> AppListTopBar(
-                    scrollBehavior = scrollBehavior,
-                    state = appListState,
+/**
+ * 主页内容（不含 Scaffold / TopAppBar）
+ *
+ * 纯展示组件，所有数据来自 [state]。
+ */
+@Composable
+private fun HomeScreen(
+    modifier: Modifier = Modifier,
+    scrollBehavior: ScrollBehavior,
+    state: HomeUiState,
+    bottomBarPadding: Dp = 0.dp,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .nestedScroll(scrollBehavior.nestedScrollConnection)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Spacer(Modifier.height(4.dp))
+
+        // ========== 状态卡片 ==========
+        StatusCard(
+            isHooked = state.isHooked,
+            frameworkName = state.frameworkName,
+            frameworkVersion = state.frameworkVersion,
+        )
+
+        // ========== Hook 详情 ==========
+        SmallTitle(text = "框架信息")
+        Card(modifier = Modifier.fillMaxWidth()) {
+            InfoComponent(title = "运行状态", summary = if (state.isHooked) "已激活" else "未激活")
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            InfoComponent(title = "框架名称", summary = state.frameworkName)
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            InfoComponent(title = "框架版本", summary = state.frameworkVersion)
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            InfoComponent(title = "LSP API 版本", summary = state.lspApiVersion)
+        }
+
+        // ========== 设备信息 ==========
+        SmallTitle(text = "设备信息")
+        Card(modifier = Modifier.fillMaxWidth()) {
+            InfoComponent(title = "设备型号", summary = state.deviceModel)
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            InfoComponent(title = "系统版本", summary = state.androidVersion)
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            InfoComponent(title = "内核版本", summary = state.kernelVersion)
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            InfoComponent(title = "SELinux", summary = state.selinuxStatus)
+        }
+
+        Spacer(Modifier.height(16.dp + bottomBarPadding))
+    }
+}
+
+@Composable
+private fun StatusCard(
+    isHooked: Boolean,
+    frameworkName: String,
+    frameworkVersion: String,
+) {
+    val bgColor = if (isHooked) Color(0xFF1B8F4C) else Color(0xFF8E8E93)
+    val dotColor = if (isHooked) Color(0xFF4CD964) else Color(0xFFFF3B30)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = top.yukonga.miuix.kmp.basic.CardColors(
+            color = bgColor,
+            contentColor = Color.White,
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.2f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    imageVector = MiuixIcons.Basic.Check,
+                    contentDescription = null,
+                    colorFilter = ColorFilter.tint(Color.White),
+                    modifier = Modifier.size(28.dp),
                 )
             }
-        },
-        bottomBar = {
-            FloatingNavigationBar {
-                tabs.forEachIndexed { index, item ->
-                    FloatingNavigationBarItem(
-                        selected = currentTab == index,
-                        onClick = { currentTab = index },
-                        icon = item.icon,
-                        label = item.label,
+
+            Spacer(Modifier.size(16.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(dotColor),
+                    )
+                    Spacer(Modifier.size(6.dp))
+                    Text(
+                        text = if (isHooked) "模块已激活" else "模块未激活",
+                        color = Color.White,
+                        fontSize = MiuixTheme.textStyles.title2.fontSize,
+                        fontWeight = FontWeight.Bold,
                     )
                 }
-            }
-        },
-    ) { paddingValues ->
-        AnimatedContent(
-            targetState = currentTab,
-            transitionSpec = {
-                fadeIn(tween(200)).togetherWith(fadeOut(tween(200)))
-            },
-            label = "tabTransition",
-            modifier = Modifier.padding(top = paddingValues.calculateTopPadding()),
-        ) { tabIndex ->
-            when (tabIndex) {
-                0 -> MainScreen(
-                    scrollBehavior = scrollBehavior,
-                    isHooked = isHooked,
-                    lspApiVersion = lspApiVersion,
-                    frameworkName = frameworkName,
-                    frameworkVersion = frameworkVersion,
-                )
-
-                1 -> AppListScreen(
-                    scrollBehavior = scrollBehavior,
-                    state = appListState,
+                Spacer(Modifier.size(4.dp))
+                Text(
+                    text = if (isHooked) "$frameworkName $frameworkVersion" else "请通过 LSPosed 启用本模块",
+                    color = Color.White.copy(alpha = 0.8f),
+                    fontSize = MiuixTheme.textStyles.body2.fontSize,
                 )
             }
         }
     }
 }
 
-private data class TabItem(
-    val label: String,
-    val icon: ImageVector,
-)
+@Composable
+private fun InfoComponent(title: String, summary: String) {
+    BasicComponent(
+        title = title,
+        summary = summary,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}

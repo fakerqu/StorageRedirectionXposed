@@ -117,37 +117,55 @@ class MainHookEntry : XposedModule() {
 
     @OptIn(ExperimentalSerializationApi::class)
     private fun reloadConfig(context: Context, version: Long) {
+        val oldByUid = hookContext.snapshot().byUid
+
         openRemoteFile(ConfigConstants.CONFIG_FILE).use { descriptor ->
             ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { inputStream ->
                 val userConfig = Json.decodeFromStream<
                     me.fakerqu.xposed.storageredirect.config.model.UserConfig>(inputStream)
-                val packageConfigs = userConfig.packageConfigs.filter { it.enabled }
+
                 if (userConfig.enabled) {
+                    val packageConfigs = userConfig.packageConfigs.filter { it.enabled }
                     val pm = context.packageManager
+                    val newByUid = packageConfigs.associate {
+                        val uid = pm.getPackageUid(
+                            it.packageName,
+                            PackageManager.MATCH_UNINSTALLED_PACKAGES,
+                        )
+                        uid to RuntimeConfig(
+                            uid,
+                            pm.getNameForUid(uid) ?: it.packageName,
+                            it.dirConfigs,
+                        )
+                    }
+
                     hookContext.configSnapshot.set(
                         ConfigSnapshot(
                             version,
                             packageConfigs.associateBy { it.packageName },
-                            packageConfigs.associate {
-                                val uid = pm.getPackageUid(
-                                    it.packageName,
-                                    PackageManager.MATCH_UNINSTALLED_PACKAGES,
-                                )
-                                uid to RuntimeConfig(
-                                    uid,
-                                    pm.getNameForUid(uid) ?: it.packageName,
-                                    it.dirConfigs,
-                                )
-                            },
+                            newByUid,
                         )
                     )
                     log(Log.INFO, HookContext.TAG, "reload config ${hookContext.snapshot()}")
 
-                    // Push all configs to native layer
-                    NativeHook.clearAllConfigs()
-                    hookContext.snapshot().byUid.forEach { (uid, config) ->
+                    // Remove configs for UIDs that are no longer active (disabled or removed)
+                    val removedUids = oldByUid.keys - newByUid.keys
+                    removedUids.forEach { uid ->
+                        NativeHook.removeUidConfig(uid)
+                    }
+
+                    // Push active configs to native layer
+                    newByUid.forEach { (uid, config) ->
                         val userId = HookUtils.getUserId(uid)
                         NativeHook.setUidConfig(uid, config, userId)
+                    }
+                } else {
+                    // Master switch is off — clear everything
+                    hookContext.configSnapshot.set(ConfigSnapshot.EMPTY)
+                    log(Log.INFO, HookContext.TAG, "reload config (disabled)")
+
+                    oldByUid.keys.forEach { uid ->
+                        NativeHook.removeUidConfig(uid)
                     }
                 }
             }

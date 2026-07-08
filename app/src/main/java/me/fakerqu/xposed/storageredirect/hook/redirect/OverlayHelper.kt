@@ -43,11 +43,6 @@ object OverlayHelper {
         if (dir.exists()) return true
         return try {
             val created = dir.mkdirs()
-            if (created) {
-                dir.setReadable(true, false)
-                dir.setWritable(true, true)
-                dir.setExecutable(true, false)
-            }
             created || dir.exists()
         } catch (e: Exception) {
             Log.e(TAG, "ensureUpperDir failed: $upperFullPath", e)

@@ -23,6 +23,7 @@ android {
             //noinspection ChromeOsAbiSupport
             abiFilters += "arm64-v8a"
         }
+        ndkVersion = "30.0.14904198 rc1"
         externalNativeBuild {
             cmake {
                 arguments += listOf("-DANDROID_STL=c++_static")
@@ -62,10 +63,12 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.miuix.ui)
     implementation(libs.miuix.icons)
     implementation(libs.miuix.preference)
     implementation(libs.miuix.navigation3.ui)
+    implementation(libs.androidx.navigation3.runtime)
     implementation(libs.sql.parser) {
         exclude(group = "org.openjdk.jmh", module = "jmh-core")
     }

@@ -2,9 +2,11 @@ package me.fakerqu.xposed.storageredirect.config
 
 import android.os.ParcelFileDescriptor
 import io.github.libxposed.service.XposedService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
@@ -30,7 +32,7 @@ import androidx.core.content.edit
  * - [updateDirConfig]           修改指定应用的目录规则
  * - [removeDirConfig]           删除指定应用的目录规则
  *
- * 所有写操作都会同步持久化到远程文件。
+ * 所有写操作都会在 [Dispatchers.IO] 上异步持久化到远程文件。
  *
  * 使用前需确保 [XposedServiceManager] 已完成绑定（[XposedServiceManager.isHooked] == true）。
  */
@@ -55,11 +57,11 @@ object ConfigManager {
      * 如果尚未加载过配置，会先调用 [reload]。
      * @return 已配置的包名 Set，如果服务未绑定或配置为空则返回空集合
      */
-    fun getConfiguredPackageNames(): Set<String> {
+    suspend fun getConfiguredPackageNames(): Set<String> = withContext(Dispatchers.IO) {
         if (_currentConfig.value == null) {
             runCatching { reload() }
         }
-        return _currentConfig.value
+        _currentConfig.value
             ?.packageConfigs
             ?.map { it.packageName }
             ?.toSet()
@@ -74,7 +76,7 @@ object ConfigManager {
      * @throws Exception 如果文件读取或反序列化失败
      */
     @OptIn(ExperimentalSerializationApi::class)
-    fun reload() {
+    suspend fun reload() = withContext(Dispatchers.IO) {
         val service = requireService()
         service.openRemoteFile(ConfigConstants.CONFIG_FILE).use { pfd ->
             ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
@@ -93,7 +95,7 @@ object ConfigManager {
      * @throws Exception 如果文件写入失败
      */
     @OptIn(ExperimentalSerializationApi::class)
-    private fun save() {
+    private suspend fun save() = withContext(Dispatchers.IO) {
         val service = requireService()
         val config = _currentConfig.value ?: error("ConfigManager.save() called before load()")
         service.openRemoteFile(ConfigConstants.CONFIG_FILE).use { pfd ->
@@ -123,7 +125,7 @@ object ConfigManager {
      * 如果 [config] 的 [PackageConfig.packageName] 已存在则替换，否则追加。
      * 写入后自动持久化。
      */
-    fun upsertPackageConfig(config: PackageConfig) {
+    suspend fun upsertPackageConfig(config: PackageConfig) {
         updateConfig { current ->
             val list = current.packageConfigs.toMutableList()
             val index = list.indexOfFirst { it.packageName == config.packageName }
@@ -140,7 +142,7 @@ object ConfigManager {
      * 删除指定应用的配置。
      * @return true 如果配置存在且已被删除
      */
-    fun removePackageConfig(packageName: String): Boolean {
+    suspend fun removePackageConfig(packageName: String): Boolean {
         var removed = false
         updateConfig { current ->
             val list = current.packageConfigs.toMutableList()
@@ -155,7 +157,7 @@ object ConfigManager {
      * 如果该应用尚无配置记录，则不会创建新记录。
      * @return true 如果成功切换（应用配置存在）
      */
-    fun setPackageEnabled(packageName: String, enabled: Boolean): Boolean {
+    suspend fun setPackageEnabled(packageName: String, enabled: Boolean): Boolean {
         var changed = false
         updateConfig { current ->
             val list = current.packageConfigs.map { pc ->
@@ -177,7 +179,7 @@ object ConfigManager {
      * 为指定应用添加一条目录规则。
      * 如果该应用尚无配置记录，会自动创建一个（enabled = true）。
      */
-    fun addDirConfig(packageName: String, dirConfig: DirConfig) {
+    suspend fun addDirConfig(packageName: String, dirConfig: DirConfig) {
         updateConfig { current ->
             val list = current.packageConfigs.toMutableList()
             val index = list.indexOfFirst { it.packageName == packageName }
@@ -196,7 +198,7 @@ object ConfigManager {
      * 更新指定应用中匹配 [relativePath] 的目录规则。
      * @return true 如果找到并更新了匹配的规则
      */
-    fun updateDirConfig(packageName: String, relativePath: String, newConfig: DirConfig): Boolean {
+    suspend fun updateDirConfig(packageName: String, relativePath: String, newConfig: DirConfig): Boolean {
         var changed = false
         updateConfig { current ->
             val list = current.packageConfigs.map { pc ->
@@ -223,7 +225,7 @@ object ConfigManager {
      * 删除指定应用中匹配 [relativePath] 的目录规则。
      * @return true 如果找到并删除了匹配的规则
      */
-    fun removeDirConfig(packageName: String, relativePath: String): Boolean {
+    suspend fun removeDirConfig(packageName: String, relativePath: String): Boolean {
         var removed = false
         updateConfig { current ->
             val list = current.packageConfigs.map { pc ->
@@ -247,7 +249,11 @@ object ConfigManager {
      * 在内存中修改配置，然后持久化到远程文件。
      * 如果尚未加载过配置，会先调用 [reload]。
      */
-    private inline fun updateConfig(block: (UserConfig) -> UserConfig) {
+    /**
+     * 在内存中修改配置，然后在 [Dispatchers.IO] 上持久化到远程文件。
+     * 如果尚未加载过配置，会先调用 [reload]。
+     */
+    private suspend inline fun updateConfig(crossinline block: (UserConfig) -> UserConfig) {
         if (_currentConfig.value == null) {
             reload()
         }

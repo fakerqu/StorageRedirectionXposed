@@ -60,7 +60,8 @@ fun HomeScreen() {
 
                 // 通过 ConfigManager 读取已配置的包名列表
                 runCatching {
-                    appListState.configuredPackages = ConfigManager.getConfiguredPackageNames()
+                    appListState.configuredPackages =
+                        ConfigManager.getConfiguredPackageNames()
                 }
             } else {
                 isHooked = false

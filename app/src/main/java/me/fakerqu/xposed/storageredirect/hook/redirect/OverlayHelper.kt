@@ -30,6 +30,28 @@ object OverlayHelper {
         return "/data/media/$currentUserId/Android/data/${config.uidName}/files/$WORK_DIR_NAME"
     }
 
+    // ======================= 重定向根目录 =======================
+
+    /**
+     * 确保重定向根目录存在：/data/media/$userId/Android/media/<uidName>/sdcard_redirect
+     *
+     * 在为应用创建配置时必须立即调用，否则应用访问重定向路径会失败。
+     */
+    @SuppressLint("SdCardPath")
+    fun ensureRedirectDir(currentUserId: Int, config: RuntimeConfig): Boolean {
+        val redirectBase = PathConverter.getRedirectBase(config)
+        val path = "/data/media/$currentUserId/$redirectBase"
+        val dir = File(path)
+        if (dir.exists()) return true
+        return try {
+            val created = dir.mkdirs()
+            created || dir.exists()
+        } catch (e: Exception) {
+            Log.e(TAG, "ensureRedirectDir failed: $path", e)
+            false
+        }
+    }
+
     // ======================= 目录 / 文件操作 =======================
 
     /**

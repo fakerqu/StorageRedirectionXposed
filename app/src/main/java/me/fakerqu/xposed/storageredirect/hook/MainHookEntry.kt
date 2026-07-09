@@ -25,6 +25,7 @@ import me.fakerqu.xposed.storageredirect.hook.fuse.FuseFileLookupHook
 import me.fakerqu.xposed.storageredirect.hook.fuse.FuseRestrictionHooks
 import me.fakerqu.xposed.storageredirect.hook.query.QueryHook
 import me.fakerqu.xposed.storageredirect.hook.redirect.NativeHook
+import me.fakerqu.xposed.storageredirect.hook.redirect.OverlayHelper
 
 /**
  * Xposed 模块入口。
@@ -157,6 +158,8 @@ class MainHookEntry : XposedModule() {
                     // Push active configs to native layer
                     newByUid.forEach { (uid, config) ->
                         val userId = HookUtils.getUserId(uid)
+                        // Ensure redirect directory exists before pushing config
+                        OverlayHelper.ensureRedirectDir(userId, config)
                         NativeHook.setUidConfig(uid, config, userId)
                     }
                 } else {

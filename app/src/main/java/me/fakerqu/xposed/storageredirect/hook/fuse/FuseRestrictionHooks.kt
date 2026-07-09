@@ -77,7 +77,15 @@ class FuseRestrictionHooks(private val ctx: HookContext) {
 
             val mode = PathConverter.resolveMode(config, userId, path)
             // WRITE/READ: always allow
-            if (mode == DirMode.WRITE || mode == DirMode.READ) return 0
+            if (mode == DirMode.WRITE || mode == DirMode.READ) {
+                ctx.info("isDirAccessAllowedForFuse allow r/w: path=$path, uid=$uid")
+                return 0
+            }
+            // NONE: allow if ancestor of granted dirs (transparency)
+            if (mode == DirMode.NONE && PathConverter.isAncestorOfGranted(config, userId, path)) {
+                ctx.info("isDirAccessAllowedForFuse allow ancestor: path=$path, uid=$uid")
+                return 0
+            }
             // NONE: only allow if upper directory exists
             if (mode == DirMode.NONE) {
                 val upperPath = PathConverter.getUpperPath(userId, config, path)

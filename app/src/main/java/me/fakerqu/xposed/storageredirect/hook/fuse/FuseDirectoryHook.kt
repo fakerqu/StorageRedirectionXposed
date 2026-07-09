@@ -46,9 +46,15 @@ class FuseDirectoryHook(private val ctx: HookContext) {
 
         return try {
             when (mode) {
-                DirMode.WRITE -> chain.proceed()
-                DirMode.NONE -> handleNoneMode(chain, userId, config, path)
+                DirMode.WRITE -> {
+                    val result = chain.proceed()
+                    ctx.info("getFilesInDirectoryForFuse w-mode: origin-result=${(result as Array<String>).joinToString { it }}")
+                    result
+                }
+
                 DirMode.READ -> handleReadMode(chain, userId, config, path)
+                // NONE → isolated, read from Upper layer only
+                else -> handleNoneMode(userId, config, path)
             }
         } catch (e: Exception) {
             ctx.error("getFilesInDirectoryForFuse failed", e)
@@ -57,53 +63,13 @@ class FuseDirectoryHook(private val ctx: HookContext) {
     }
 
     // ---- NONE mode ----
-
     @SuppressLint("SdCardPath")
     private fun handleNoneMode(
-        chain: XposedInterface.Chain,
         userId: Int,
         config: me.fakerqu.xposed.storageredirect.config.model.RuntimeConfig,
         path: String,
     ): Array<String> {
-        val relativePath = PathConverter.toRelativePath(userId, path)
-
-        return if (relativePath.isEmpty()) {
-            // 根目录：过滤 NONE 子目录 + 合并 Upper 层文件
-            filterRootDirectory(chain, userId, config, path)
-        } else {
-            // NONE 子目录：直接从 Upper 层读取
-            readUpperDirectory(userId, config, path)
-        }
-    }
-
-    private fun filterRootDirectory(
-        chain: XposedInterface.Chain,
-        userId: Int,
-        config: me.fakerqu.xposed.storageredirect.config.model.RuntimeConfig,
-        path: String,
-    ): Array<String> {
-        val originalNames = (chain.proceed() as? Array<*>)
-            ?.filterIsInstance<String>()
-            ?: emptyList()
-
-        val basePath = path.trimEnd('/')
-        val filtered = originalNames.filter { name ->
-            val childPath = "$basePath/$name"
-            val childMode = PathConverter.resolveMode(config, userId, childPath)
-            childMode != DirMode.NONE
-        }.toMutableSet()
-
-        // 合并 Upper 层文件
-        val upperPath = PathConverter.getUpperPath(userId, config, path)
-        val upperDir = File(upperPath)
-        if (upperDir.exists()) {
-            upperDir.listFiles()?.forEach { f ->
-                if (!f.name.startsWith(".wh.")) filtered.add(f.name)
-            }
-        }
-
-        ctx.info("getFilesInDirectoryForFuse root: original=${originalNames.size}, filtered=${filtered.size}")
-        return filtered.toTypedArray()
+        return readUpperDirectory(userId, config, path)
     }
 
     private fun readUpperDirectory(
@@ -115,6 +81,7 @@ class FuseDirectoryHook(private val ctx: HookContext) {
         val upperDir = File(upperPath)
         return if (upperDir.exists()) {
             val names = upperDir.listFiles()
+                ?.filter { it.isFile }
                 ?.map { it.name }
                 ?.filter { !it.startsWith(".wh.") }
                 ?: emptyList()

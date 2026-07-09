@@ -48,14 +48,14 @@ object SelectionBinder {
                         res.append(if (arg) 1 else 0)
                     } else {
                         res.append('\'')
-                        res.append(arg.toString())
+                        res.append(arg.toString().replace("'", "''"))
                         res.append('\'')
                     }
                     else -> if (arg is Boolean) {
                         res.append(if (arg) 1 else 0)
                     } else {
                         res.append('\'')
-                        res.append(arg.toString())
+                        res.append(arg.toString().replace("'", "''"))
                         res.append('\'')
                     }
                 }

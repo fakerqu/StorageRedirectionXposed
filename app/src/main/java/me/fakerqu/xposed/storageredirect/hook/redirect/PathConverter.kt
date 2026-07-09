@@ -6,6 +6,7 @@ import me.fakerqu.xposed.storageredirect.config.model.DirMode
 import me.fakerqu.xposed.storageredirect.config.model.RuntimeConfig
 import kotlin.io.path.Path
 import kotlin.io.path.name
+import kotlin.io.path.pathString
 
 /**
  * 纯路径计算工具（零文件 I/O）。
@@ -94,6 +95,56 @@ object PathConverter {
         return matchedConfig?.mode ?: DirMode.NONE
     }
 
+    /**
+     * 判断路径是否为某个已授权目录的祖先目录。
+     *
+     * 例如：应用被授予 DCIM/Camera 的 r 权限时，
+     * - DCIM 是 DCIM/Camera 的父目录 → true
+     * - /  （根目录）→ true
+     *
+     * 祖先目录本身被当作 NONE 处理，但允许 list/access，
+     * list 时仅返回具有权限的子目录。
+     */
+    fun isAncestorOfGranted(config: RuntimeConfig, currentUserId: Int, originPath: String): Boolean {
+        val relativePath = toRelativePath(currentUserId, originPath)
+        if (relativePath.isEmpty()) {
+            // 根目录：只要存在任何已授权的非根规则，根就是祖先
+            return config.dirConfigs.any { it.enabled }
+        }
+        val prefix = if (relativePath.endsWith("/")) relativePath else "$relativePath/"
+        return config.dirConfigs.any {
+            it.enabled && (it.relativePath.startsWith(prefix))
+        }
+    }
+
+    /**
+     * 获取一个路径下所有直接子条目中具有访问权限的名称集合。
+     *
+     * 用于祖先目录的 list 操作：仅返回子目录中自身或其后代具有 r/w 权限的条目。
+     */
+    fun grantedChildNames(
+        config: RuntimeConfig,
+        currentUserId: Int,
+        originPath: String,
+    ): Set<String> {
+        val relativePath = toRelativePath(currentUserId, originPath)
+        val prefix = if (relativePath.isEmpty()) "" else "$relativePath/"
+
+        val names = mutableSetOf<String>()
+        for (dirConfig in config.dirConfigs) {
+            if (!dirConfig.enabled) continue
+            if (!dirConfig.relativePath.startsWith(prefix)) continue
+            val remainder = dirConfig.relativePath.substring(prefix.length)
+            if (remainder.isEmpty()) continue
+            // 取第一级子目录名
+            val firstSegment = remainder.substringBefore("/")
+            if (firstSegment.isNotEmpty()) {
+                names.add(firstSegment)
+            }
+        }
+        return names
+    }
+
     // ======================= Upper 路径构造 =======================
 
     /**
@@ -151,7 +202,16 @@ object PathConverter {
         val replacedPaths = when (matchedConfig?.mode) {
             DirMode.WRITE -> listOf(relativePath)
             DirMode.READ -> listOf(relativePath, replacedPath)
-            DirMode.NONE, null -> listOf(replacedPath)
+            DirMode.NONE, null -> {
+                // NONE: redirect to Upper layer
+                // But if this path is an ancestor of granted dirs, also query
+                // the original path so MediaStore can find files under granted children
+                if (isAncestorOfGranted(config, currentUserId, originPath)) {
+                    listOf(relativePath, replacedPath)
+                } else {
+                    listOf(replacedPath)
+                }
+            }
         }
         return if (originPath.startsWith("/")) {
             replacedPaths.map { "/storage/emulated/$currentUserId/$it" }
@@ -184,6 +244,11 @@ object PathConverter {
             return PATH_FILTER_OUT
         }
 
+        //upper目录，但是并非为该应用的upper目录
+        if(originFile.pathString.contains(REDIRECT_DIR_NAME) && !originFile.pathString.contains(config.uidName)){
+            return PATH_FILTER_OUT
+        }
+
         // 非重定向路径：检查模式
         if (!isRedirectionDir(cleanPath)) {
             Log.i("SRX", "path convert to app not redirect path originPath=$cleanPath")
@@ -197,7 +262,11 @@ object PathConverter {
                     return cleanPath
                 }
                 DirMode.NONE -> {
-                    // NONE 模式：隔离，过滤掉 Lower 层条目
+                    // NONE 模式：隔离
+                    // 如果是祖先目录，允许原始路径查询结果透传（应用可在子目录中发现已授权文件）
+                    if (isAncestorOfGranted(config, currentUserId, cleanPath)) {
+                        return cleanPath
+                    }
                     return PATH_FILTER_OUT
                 }
                 DirMode.READ -> {

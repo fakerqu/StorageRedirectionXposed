@@ -42,13 +42,17 @@ class FuseFileLookupHook(private val ctx: HookContext) {
         if (!PathConverter.pathNeedRedirect(userId, path)) return chain.proceed()
 
         val mode = PathConverter.resolveMode(config, userId, path)
-        ctx.info("onFileLookupForFuse path=$path uid=$uid mode=$mode")
+        val isAncestor = PathConverter.isAncestorOfGranted(config, userId, path)
+        ctx.info("onFileLookupForFuse path=$path uid=$uid mode=$mode isAncestor=$isAncestor")
 
         return try {
-            when (mode) {
-                DirMode.WRITE -> chain.proceed()
-                DirMode.NONE -> handleNoneMode(chain, userId, config, path, uid)
-                DirMode.READ -> handleReadMode(chain, userId, config, path, uid)
+            when {
+                mode == DirMode.WRITE -> chain.proceed()
+                mode == DirMode.READ -> handleReadMode(chain, userId, config, path, uid)
+                // NONE but ancestor → allow lookup (transparency to lower)
+//                isAncestor -> chain.proceed()
+                // NONE and not ancestor → redirect to Upper
+                else -> handleNoneMode(chain, userId, config, path, uid)
             }
         } catch (e: Exception) {
             ctx.error("onFileLookupForFuse failed", e)
@@ -63,6 +67,8 @@ class FuseFileLookupHook(private val ctx: HookContext) {
         path: String,
         uid: Int,
     ): Any? {
+        // This path is NONE mode and not an ancestor of any granted dir.
+        // Redirect to the Upper layer so the app sees only redirected content.
         val upperFusePath = PathConverter.getUpperFusePath(userId, config, path)
         ctx.info("onFileLookupForFuse n-mode upperFusePath=$upperFusePath")
         ensureFileInMediaStore(chain.thisObject, upperFusePath, uid)

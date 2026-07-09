@@ -52,7 +52,7 @@ class QueryHook(private val ctx: HookContext) {
     private fun intercept(chain: XposedInterface.Chain): Any? {
         val uid = ctx.reflection.getCallingUid(chain.thisObject)
         val config = ctx.configFor(uid) ?: return chain.proceed()
-        ctx.info("queryInternal start uid=$uid")
+        ctx.info("queryInternal start uid=$uid param=${chain.args.joinToString()}")
 
         // Phase 1: 检查是否跳过
         if (shouldSkip(chain)) return chain.proceed()
@@ -60,6 +60,7 @@ class QueryHook(private val ctx: HookContext) {
         // Phase 2 & 3: 重写参数
         val originProjection = chain.args[1] as Array<String>?
         val newArgs = rewriteArgs(chain, uid, config, originProjection)
+        ctx.info("queryInternal start uid=$uid rewriteArg=${newArgs.joinToString()}")
 
         // 执行查询
         val result = chain.proceedWith(chain.thisObject, newArgs) as Cursor?
@@ -171,6 +172,7 @@ class QueryHook(private val ctx: HookContext) {
         return try {
             if (ctx.configFor(uid) != null) {
                 val userId = HookUtils.getUserId(uid)
+                ctx.info("queryInternal origin-result: ${CursorDebug.dump(result)}")
                 val wrapped = FilteredWrappedCursor.wrap(result, originProjection) { originPath ->
                     PathConverter.toApp(
                         userId, config, originPath,

@@ -31,7 +31,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
+import org.koin.compose.viewmodel.koinViewModel
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -58,10 +58,10 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  */
 @Composable
 fun DirectoryPickerScreen(
+    viewModel: DirectoryPickerViewModel = koinViewModel(),
     onPathSelected: (String) -> Unit,
     onBack: () -> Unit,
 ) {
-    val viewModel: DirectoryPickerViewModel = viewModel()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scrollBehavior = MiuixScrollBehavior(rememberTopAppBarState())
@@ -182,7 +182,9 @@ fun DirectoryPickerScreen(
                         )
                     }
                 } else if (state.subDirs.isEmpty()) {
-                    Card(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                    Card(modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)) {
                         BasicComponent(
                             title = "无子文件夹",
                             summary = "可以选择当前目录",

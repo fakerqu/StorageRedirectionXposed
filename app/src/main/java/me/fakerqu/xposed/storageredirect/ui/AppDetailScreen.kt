@@ -30,7 +30,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
+import org.koin.compose.viewmodel.koinViewModel
 import me.fakerqu.xposed.storageredirect.config.model.DirConfig
 import me.fakerqu.xposed.storageredirect.config.model.DirMode
 import top.yukonga.miuix.kmp.basic.BasicComponent
@@ -63,27 +63,20 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  * 所有修改保存在 [AppDetailViewModel] 的草稿中，点击「保存」后一次性写入远程配置。
  * 退出时有未保存改动会弹窗提示。
  *
- * @param packageName    目标应用包名
  * @param onBack         返回上一页
  * @param onAddDirectory 跳转到目录选择器
  * @param pendingDirPath 从目录选择器返回的待添加路径（非空时自动添加到草稿）
  */
 @Composable
 fun AppDetailScreen(
-    packageName: String,
+    viewModel: AppDetailViewModel,
     onBack: () -> Unit,
     onAddDirectory: () -> Unit,
     pendingDirPath: String? = null,
     onPendingPathConsumed: () -> Unit = {},
 ) {
-    val viewModel: AppDetailViewModel = viewModel()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val scrollBehavior = MiuixScrollBehavior(rememberTopAppBarState())
-
-    // 初始化（仅在 packageName 变化时）
-    LaunchedEffect(packageName) {
-        viewModel.init(packageName)
-    }
 
     // 从目录选择器返回的路径自动添加到草稿（仅消费一次）
     LaunchedEffect(pendingDirPath) {
@@ -156,7 +149,7 @@ fun AppDetailScreen(
                     TextButton(
                         text = "保存",
                         onClick = {
-                            viewModel.save(packageName) { onBack() }
+                            viewModel.save { onBack() }
                         },
                         modifier = Modifier.padding(end = 8.dp),
                         colors = if (state.hasAnyUnsaved) {

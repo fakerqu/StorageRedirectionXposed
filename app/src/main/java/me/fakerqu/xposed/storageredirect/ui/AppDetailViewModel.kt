@@ -47,19 +47,18 @@ data class AppDetailUiState(
  */
 class AppDetailViewModel(
     application: Application,
+    private val packageName: String
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(AppDetailUiState())
     val uiState: StateFlow<AppDetailUiState> = _uiState.asStateFlow()
 
-    fun init(packageName: String) {
-        // 加载 app label
+    init {
         viewModelScope.launch {
             val label = runCatching {
                 val pm = getApplication<Application>().packageManager
                 pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
             }.getOrDefault(packageName)
-
             val savedConfig = ConfigManager.getPackageConfig(packageName)
             _uiState.update {
                 it.copy(
@@ -73,6 +72,37 @@ class AppDetailViewModel(
             }
         }
     }
+
+//    /**
+//     * 已初始化的包名，避免重复 init 覆盖草稿
+//     */
+//    private var initializedPackage: String? = null
+//
+//    fun init(packageName: String) {
+//        // 防止重复初始化（导航到其他页面再返回时不覆盖草稿）
+//        if (initializedPackage == packageName) return
+//        initializedPackage = packageName
+//
+//        // 加载 app label
+//        viewModelScope.launch {
+//            val label = runCatching {
+//                val pm = getApplication<Application>().packageManager
+//                pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
+//            }.getOrDefault(packageName)
+//
+//            val savedConfig = ConfigManager.getPackageConfig(packageName)
+//            _uiState.update {
+//                it.copy(
+//                    appLabel = label,
+//                    draftEnabled = savedConfig?.enabled ?: false,
+//                    draftDirConfigs = savedConfig?.dirConfigs ?: emptyList(),
+//                    savedEnabled = savedConfig?.enabled ?: false,
+//                    savedDirConfigs = savedConfig?.dirConfigs ?: emptyList(),
+//                    hasSavedConfig = savedConfig != null,
+//                )
+//            }
+//        }
+//    }
 
     fun setEnabled(enabled: Boolean) {
         _uiState.update { it.copy(draftEnabled = enabled) }
@@ -114,10 +144,9 @@ class AppDetailViewModel(
 
     /**
      * 保存草稿到远程配置。
-     * @param packageName 目标应用包名
      * @param onSuccess 保存成功回调
      */
-    fun save(packageName: String, onSuccess: () -> Unit) {
+    fun save(onSuccess: () -> Unit) {
         val state = _uiState.value
         viewModelScope.launch {
             ConfigManager.upsertPackageConfig(

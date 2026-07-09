@@ -36,7 +36,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
+import org.koin.compose.viewmodel.koinViewModel
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
@@ -67,10 +67,10 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  */
 @Composable
 fun AppListPage(
+    viewModel: AppListViewModel = koinViewModel(),
     onAppClick: (String) -> Unit,
     bottomBarPadding: Dp = 0.dp,
 ) {
-    val viewModel: AppListViewModel = viewModel()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val scrollBehavior = MiuixScrollBehavior(rememberTopAppBarState())
 

@@ -9,8 +9,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
 import androidx.navigation3.runtime.NavEntry
+import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
+import org.koin.compose.viewmodel.koinViewModel
+import org.koin.core.parameter.parametersOf
 import top.yukonga.miuix.kmp.basic.FloatingNavigationBar
 import top.yukonga.miuix.kmp.basic.FloatingNavigationBarItem
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -69,6 +73,10 @@ fun NavHostScreen() {
             backStack = backStack,
             modifier = Modifier.fillMaxSize(),
             onBack = { backStack.removeLastOrNull() },
+            entryDecorators = listOf(
+                rememberSaveableStateHolderNavEntryDecorator(),
+                rememberViewModelStoreNavEntryDecorator(),
+            ),
             entryProvider = { key ->
                 when (key) {
                     is MainKey -> NavEntry(key) {
@@ -85,8 +93,11 @@ fun NavHostScreen() {
                     }
 
                     is AppDetailKey -> NavEntry(key) {
+                        val viewModel = koinViewModel<AppDetailViewModel> {
+                            parametersOf(key.packageName)
+                        }
                         AppDetailScreen(
-                            packageName = key.packageName,
+                            viewModel = viewModel,
                             onBack = { backStack.removeLastOrNull() },
                             onAddDirectory = {
                                 backStack.add(DirectoryPickerKey(key.packageName))

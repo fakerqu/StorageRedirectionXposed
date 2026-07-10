@@ -5,6 +5,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -53,7 +54,7 @@ class AppListViewModel(
      * 监听 LSP 服务状态，连接后自动同步已配置包名
      */
     private fun observeXposedService() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             XposedServiceManager.service.collect { service ->
                 if (service != null) {
                     val packages = ConfigManager.getConfiguredPackageNames()
@@ -95,7 +96,7 @@ class AppListViewModel(
      * 如果存在多用户/工作资料（Work Profile），还会出现 10、11 等。
      */
     private fun loadUsers() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             // 由于本应用运行在宿主进程，无法直接通过 createPackageContextAsUser
             // 获取其他用户空间的应用列表。此处仅展示当前用户（userId=0）的应用列表。
             // 如需多用户支持，需要在 Xposed 模块侧通过远程服务获取。
@@ -109,7 +110,7 @@ class AppListViewModel(
      */
     private fun loadApps() {
         _uiState.update { it.copy(isLoading = true) }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val apps = getInstalledApps(_uiState.value.currentUserId)
             _uiState.update { it.copy(allApps = apps, isLoading = false) }
         }
@@ -117,11 +118,16 @@ class AppListViewModel(
 
     /**
      * 从 PackageManager 查询已安装应用列表
+     *
+     * 使用 [PackageManager.getInstalledPackages] 一次性获取包含 firstInstallTime 的 PackageInfo 列表，
+     * 避免对每个应用单独调用 getPackageInfo 造成 N+1 次 IPC 开销。
      */
     private fun getInstalledApps(userId: Int): List<AppInfo> {
         val pm = getApplication<Application>().packageManager
         val flags = PackageManager.GET_META_DATA
-        return pm.getInstalledApplications(flags).map { appInfo ->
+        // 单次 IPC 调用，返回的 PackageInfo 已包含 firstInstallTime 和 applicationInfo
+        return pm.getInstalledPackages(flags).mapNotNull { pkgInfo ->
+            val appInfo = pkgInfo.applicationInfo ?: return@mapNotNull null
             AppInfo(
                 packageName = appInfo.packageName,
                 label = pm.getApplicationLabel(appInfo).toString(),
@@ -130,9 +136,7 @@ class AppListViewModel(
                 uid = appInfo.uid,
                 userId = userId,
                 icon = runCatching { pm.getApplicationIcon(appInfo) }.getOrNull(),
-                firstInstallTime = runCatching {
-                    pm.getPackageInfo(appInfo.packageName, 0).firstInstallTime
-                }.getOrDefault(0L),
+                firstInstallTime = pkgInfo.firstInstallTime,
             )
         }
     }

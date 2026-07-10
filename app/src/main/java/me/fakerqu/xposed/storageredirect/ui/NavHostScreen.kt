@@ -57,8 +57,14 @@ fun NavHostScreen() {
                         FloatingNavigationBarItem(
                             selected = selectedTab == index,
                             onClick = {
-                                backStack.clear()
-                                backStack.add(if (index == 0) MainKey else AppListKey)
+                                val targetKey = if (index == 0) MainKey else AppListKey
+                                // 保留底层 tab，避免销毁 ViewModel：
+                                // 先移除目标 key 上方的所有页面，再将目标移到栈顶
+                                backStack.removeAll { it is AppDetailKey || it is DirectoryPickerKey }
+                                if (backStack.lastOrNull() != targetKey) {
+                                    backStack.remove(targetKey)
+                                    backStack.add(targetKey)
+                                }
                             },
                             icon = item.icon,
                             label = item.label,

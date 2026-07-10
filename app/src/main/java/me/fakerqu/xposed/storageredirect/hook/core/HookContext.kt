@@ -37,6 +37,7 @@ class HookContext(
     // ---- Hook 安装 ----
 
     fun hookMethod(method: Method, body: (XposedInterface.Chain) -> Any?) {
+        module.deoptimize(method)
         module.hook(method).intercept(body)
     }
 

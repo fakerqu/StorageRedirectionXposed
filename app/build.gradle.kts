@@ -7,7 +7,9 @@ plugins {
 android {
     namespace = "me.fakerqu.xposed.storageredirect"
     compileSdk {
-        version = release(37)
+        version = release(37){
+            minorApiLevel = 1
+        }
     }
 
     defaultConfig {
@@ -23,12 +25,7 @@ android {
             //noinspection ChromeOsAbiSupport
             abiFilters += "arm64-v8a"
         }
-        ndkVersion = "30.0.14904198 rc1"
-        externalNativeBuild {
-            cmake {
-                arguments += listOf("-DANDROID_STL=c++_static")
-            }
-        }
+        ndkVersion = "30.0.15729638 rc2"
     }
 
     buildTypes {
@@ -50,7 +47,7 @@ android {
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+            version = "4.1.2"
         }
     }
 }
@@ -80,7 +77,6 @@ dependencies {
     implementation(libs.libxposed.service)
     compileOnly(libs.libxposed.api)
     testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

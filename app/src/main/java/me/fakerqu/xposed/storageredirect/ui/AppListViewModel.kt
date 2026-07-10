@@ -29,6 +29,7 @@ data class AppListUiState(
     val showSystemApps: Boolean = true,
     val enabledFirst: Boolean = false,
     val configuredPackages: Set<String> = emptySet(),
+    val configEnabledPackages: Set<String> = emptySet(),
 )
 
 /**
@@ -45,9 +46,7 @@ class AppListViewModel(
     val uiState: StateFlow<AppListUiState> = _uiState.asStateFlow()
 
     init {
-        loadUsers()
-        loadApps()
-        observeXposedService()
+        refresh()
     }
 
     /**
@@ -58,14 +57,22 @@ class AppListViewModel(
             XposedServiceManager.service.collect { service ->
                 if (service != null) {
                     val packages = ConfigManager.getConfiguredPackageNames()
-                    _uiState.update { it.copy(configuredPackages = packages) }
+                    val configEnabledPackages = ConfigManager.getConfigEnabledPackageNames()
+                    _uiState.update {
+                        it.copy(
+                            configuredPackages = packages,
+                            configEnabledPackages = configEnabledPackages
+                        )
+                    }
                 }
             }
         }
     }
 
     fun refresh() {
+        loadUsers()
         loadApps()
+        observeXposedService()
     }
 
     fun switchUser(userId: Int) {

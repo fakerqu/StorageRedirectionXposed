@@ -1,7 +1,6 @@
 package me.fakerqu.xposed.storageredirect.ui
 
 import android.graphics.drawable.Drawable
-import me.fakerqu.xposed.storageredirect.model.AppInfo
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -36,6 +35,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import me.fakerqu.xposed.storageredirect.model.AppInfo
 import org.koin.compose.viewmodel.koinViewModel
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
@@ -44,17 +44,17 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.InputField
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
+import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.SearchBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TopAppBar
+import top.yukonga.miuix.kmp.basic.rememberTopAppBarState
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Contacts
 import top.yukonga.miuix.kmp.icon.extended.Refresh
 import top.yukonga.miuix.kmp.icon.extended.Sort
 import top.yukonga.miuix.kmp.menu.OverlayIconDropdownMenu
-import top.yukonga.miuix.kmp.basic.Scaffold
-import top.yukonga.miuix.kmp.basic.rememberTopAppBarState
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
@@ -210,7 +210,7 @@ private fun AppListScreen(
     // ---- 过滤 + 排序 ----
     val filteredApps = remember(
         state.allApps, state.searchQuery, state.sortMode,
-        state.showSystemApps, state.enabledFirst, state.configuredPackages,
+        state.showSystemApps, state.enabledFirst
     ) {
         filterAndSortApps(state)
     }
@@ -239,6 +239,7 @@ private fun AppListScreen(
             modifier = Modifier.fillMaxSize(),
             apps = filteredApps,
             configuredPackages = state.configuredPackages,
+            configEnabledPackages = state.configEnabledPackages,
             listState = listState,
             onAppClick = onAppClick,
             bottomBarPadding = bottomBarPadding,
@@ -280,6 +281,7 @@ private fun filterAndSortApps(state: AppListUiState): List<AppInfo> {
             val collator = java.text.Collator.getInstance(java.util.Locale.CHINA)
             result.sortedWith { a, b -> collator.compare(a.label, b.label) }
         }
+
         SortMode.INSTALL_TIME -> result.sortedByDescending { it.firstInstallTime }
     }
 
@@ -299,6 +301,7 @@ private fun AppList(
     modifier: Modifier = Modifier,
     apps: List<AppInfo>,
     configuredPackages: Set<String>,
+    configEnabledPackages: Set<String>,
     listState: LazyListState,
     onAppClick: (String) -> Unit = {},
     bottomBarPadding: Dp = 0.dp,
@@ -313,6 +316,7 @@ private fun AppList(
             AppItem(
                 app = app,
                 isConfigured = app.packageName in configuredPackages,
+                isConfigEnabled = app.packageName in configEnabledPackages,
                 onClick = { onAppClick(app.packageName) },
             )
         }
@@ -323,6 +327,7 @@ private fun AppList(
 private fun AppItem(
     app: AppInfo,
     isConfigured: Boolean = false,
+    isConfigEnabled: Boolean = false,
     onClick: () -> Unit = {},
 ) {
     Row(
@@ -351,9 +356,12 @@ private fun AppItem(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        if (isConfigured) {
+        if (isConfigEnabled) {
             Spacer(Modifier.size(4.dp))
-            StatusTag(text = "已配置", color = Color(0xFF007AFF))
+            StatusTag(text = "配置启用", color = Color(0xFF007AFF))
+        } else if (isConfigured) {
+            Spacer(Modifier.size(4.dp))
+            StatusTag(text = "配置禁用", color = Color(0x77007AFF))
         }
         if (app.isSystem) {
             Spacer(Modifier.size(4.dp))

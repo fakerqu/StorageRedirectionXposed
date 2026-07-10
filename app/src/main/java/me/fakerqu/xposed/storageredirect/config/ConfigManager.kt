@@ -67,6 +67,24 @@ object ConfigManager {
             ?: emptySet()
     }
 
+    /**
+     * 列出所有配置启用的应用的包名集合。
+     *
+     * 如果尚未加载过配置，会先调用 [reload]。
+     * @return 已配置的包名 Set，如果服务未绑定或配置为空则返回空集合
+     */
+    suspend fun getConfigEnabledPackageNames(): Set<String> = withContext(Dispatchers.IO) {
+        if (_currentConfig.value == null) {
+            runCatching { reload() }
+        }
+        _currentConfig.value
+            ?.packageConfigs
+            ?.filter { it.enabled }
+            ?.map { it.packageName }
+            ?.toSet()
+            ?: emptySet()
+    }
+
     // ========================= 整体加载 / 保存 =========================
 
     /**

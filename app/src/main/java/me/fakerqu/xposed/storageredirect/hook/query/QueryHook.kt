@@ -147,9 +147,17 @@ class QueryHook(private val ctx: HookContext) {
         val selectionArgs =
             queryArg.getStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS) ?: emptyArray()
 
-        val expression = CCJSqlParserUtil.parseCondExpression(
-            SelectionBinder.bind(selection, *selectionArgs)
-        )
+        // Pre-normalize: JSqlParser doesn't support '==' (only '=')
+        val normalizedSelection = selection.replace("==", "=")
+
+        val expression = try {
+            CCJSqlParserUtil.parseCondExpression(
+                SelectionBinder.bind(normalizedSelection, *selectionArgs)
+            )
+        } catch (e: Exception) {
+            ctx.warn("queryInternal: selection parse failed, skipping rewrite: '$selection'", e)
+            return
+        }
         queryArg.remove(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS)
         queryArg.putString(
             ContentResolver.QUERY_ARG_SQL_SELECTION,

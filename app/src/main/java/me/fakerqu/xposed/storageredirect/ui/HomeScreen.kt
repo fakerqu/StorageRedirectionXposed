@@ -101,6 +101,7 @@ private fun HomeScreen(
         // ========== 状态卡片 ==========
         StatusCard(
             isHooked = state.isHooked,
+            needsRestart = state.needsRestart,
             frameworkName = state.frameworkName,
             frameworkVersion = state.frameworkVersion,
         )
@@ -136,11 +137,30 @@ private fun HomeScreen(
 @Composable
 private fun StatusCard(
     isHooked: Boolean,
+    needsRestart: Boolean,
     frameworkName: String,
     frameworkVersion: String,
 ) {
-    val bgColor = if (isHooked) Color(0xFF1B8F4C) else Color(0xFF8E8E93)
-    val dotColor = if (isHooked) Color(0xFF4CD964) else Color(0xFFFF3B30)
+    val bgColor = when {
+        !isHooked -> Color(0xFF8E8E93)
+        needsRestart -> Color(0xFFFF9500)
+        else -> Color(0xFF1B8F4C)
+    }
+    val dotColor = when {
+        !isHooked -> Color(0xFFFF3B30)
+        needsRestart -> Color(0xFFFFCC02)
+        else -> Color(0xFF4CD964)
+    }
+    val statusText = when {
+        !isHooked -> "模块未激活"
+        needsRestart -> "需要重启目标应用/热重载"
+        else -> "模块已激活"
+    }
+    val summaryText = when {
+        !isHooked -> "请通过 LSPosed 启用本模块"
+        needsRestart -> "$frameworkName $frameworkVersion — 目标进程需要重启"
+        else -> "$frameworkName $frameworkVersion"
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -182,7 +202,7 @@ private fun StatusCard(
                     )
                     Spacer(Modifier.size(6.dp))
                     Text(
-                        text = if (isHooked) "模块已激活" else "模块未激活",
+                        text = statusText,
                         color = Color.White,
                         fontSize = MiuixTheme.textStyles.title2.fontSize,
                         fontWeight = FontWeight.Bold,
@@ -190,7 +210,7 @@ private fun StatusCard(
                 }
                 Spacer(Modifier.size(4.dp))
                 Text(
-                    text = if (isHooked) "$frameworkName $frameworkVersion" else "请通过 LSPosed 启用本模块",
+                    text = summaryText,
                     color = Color.White.copy(alpha = 0.8f),
                     fontSize = MiuixTheme.textStyles.body2.fontSize,
                 )

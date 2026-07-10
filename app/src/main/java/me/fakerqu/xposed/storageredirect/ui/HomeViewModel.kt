@@ -17,6 +17,7 @@ import java.io.File
  */
 data class HomeUiState(
     val isHooked: Boolean = false,
+    val needsRestart: Boolean = false,
     val lspApiVersion: String = "—",
     val frameworkName: String = "—",
     val frameworkVersion: String = "—",
@@ -53,6 +54,7 @@ class HomeViewModel(
 
     private fun observeXposedService() {
         viewModelScope.launch {
+            // 监听 LSP service 连接状态
             XposedServiceManager.service.collect { service ->
                 if (service != null) {
                     _uiState.update {
@@ -64,8 +66,14 @@ class HomeViewModel(
                         )
                     }
                 } else {
-                    _uiState.update { it.copy(isHooked = false) }
+                    _uiState.update { it.copy(isHooked = false, needsRestart = false) }
                 }
+            }
+        }
+        // 监听是否需要重启
+        viewModelScope.launch {
+            XposedServiceManager.needsRestart.collect { needsRestart ->
+                _uiState.update { it.copy(needsRestart = needsRestart) }
             }
         }
     }

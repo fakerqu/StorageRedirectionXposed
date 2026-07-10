@@ -70,6 +70,7 @@ static ssize_t (*backup_vmsplice)(int, const struct iovec *, size_t, unsigned in
 static int (*backup_close)(int) = nullptr;
 
 static HookFunType g_hook_func = nullptr;
+static UnhookFunType g_unhook_func = nullptr;
 
 // ============================================================================
 // FUSE protocol structures (kernel ABI, stable across Android versions)
@@ -884,6 +885,62 @@ Java_me_fakerqu_xposed_storageredirect_hook_redirect_NativeHook_nativeClearAllCo
     LOGI("All configs cleared");
 }
 
+JNIEXPORT void JNICALL
+Java_me_fakerqu_xposed_storageredirect_hook_redirect_NativeHook_nativeCleanup(
+        JNIEnv * /*env*/, jclass /*clazz*/) {
+    LOGI("nativeCleanup: restoring native hooks...");
+
+    // Lambda to unhook a single function by symbol name
+    auto unhook_one = [](const char *name) {
+        void *func = dlsym(RTLD_DEFAULT, name);
+        if (func && g_unhook_func) {
+            g_unhook_func(func);
+            LOGI("Unhooked %s", name);
+        }
+    };
+
+    // Unhook in reverse order of installation (see native_init)
+    unhook_one("vmsplice");
+    unhook_one("close");
+    unhook_one("splice");
+    unhook_one("pipe2");
+    unhook_one("pipe");
+    unhook_one("readv");
+    unhook_one("recvmsg");
+    unhook_one("pread64");
+    unhook_one("read");
+    unhook_one("rmdir");
+    unhook_one("unlinkat");
+    unhook_one("unlink");
+    unhook_one("mkdirat");
+    unhook_one("mkdir");
+    unhook_one("openat");
+    unhook_one("open");
+    unhook_one("fstatat");
+    unhook_one("access");
+    unhook_one("lstat");
+    unhook_one("stat");
+
+    // Clear all global state
+    {
+        std::lock_guard<std::mutex> lock(g_config_mutex);
+        g_configs.clear();
+    }
+    g_fuse_fd = -1;
+    {
+        std::lock_guard<std::mutex> lock(g_pipe_mutex);
+        g_fuse_pipe_fds.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_pipe_pair_mutex);
+        g_pipe_write_to_read.clear();
+    }
+    g_hook_func = nullptr;
+    g_unhook_func = nullptr;
+
+    LOGI("nativeCleanup: all hooks removed, state cleared");
+}
+
 // ============================================================================
 // LSPosed Native Hook Entry
 // ============================================================================
@@ -895,6 +952,7 @@ NativeOnModuleLoaded native_init(const NativeAPIEntries *entries) {
     LOGI("native_init: LSPosed native hook starting...");
 
     g_hook_func = entries->hook_func;
+    g_unhook_func = entries->unhook_func;
 
     // Scan already-open fds to find /dev/fuse (opened before hook installed)
     scan_for_fuse_fd();

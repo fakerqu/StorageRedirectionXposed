@@ -16,7 +16,7 @@ import me.fakerqu.xposed.storageredirect.config.model.RuntimeConfig
 object NativeHook {
 
     private const val TAG = "SRX"
-    private var loaded = false
+    @Volatile private var loaded = false
 
     /**
      * Load the native library inside the target process.
@@ -90,6 +90,22 @@ object NativeHook {
         }
     }
 
+    /**
+     * Remove all native inline hooks and clear global state.
+     * Called during hot reload preparation (onHotReloading).
+     *
+     * After calling this, [init] can be called again to reload the native library.
+     */
+    fun cleanup() {
+        if (!loaded) return
+        try {
+            nativeCleanup()
+            loaded = false
+        } catch (e: Exception) {
+            Log.e(TAG, "nativeCleanup failed", e)
+        }
+    }
+
     // ---- JNI declarations ----
 
     @JvmStatic
@@ -103,4 +119,7 @@ object NativeHook {
 
     @JvmStatic
     private external fun nativeClearAllConfigs()
+
+    @JvmStatic
+    private external fun nativeCleanup()
 }

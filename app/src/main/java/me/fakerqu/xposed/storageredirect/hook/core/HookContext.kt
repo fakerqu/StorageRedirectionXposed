@@ -3,6 +3,7 @@ package me.fakerqu.xposed.storageredirect.hook.core
 import android.util.Log
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
+import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -35,7 +36,7 @@ class HookContext(
 
     // ---- Hook 安装 ----
 
-    fun hookMethod(method: java.lang.reflect.Method, body: (XposedInterface.Chain) -> Any?) {
+    fun hookMethod(method: Method, body: (XposedInterface.Chain) -> Any?) {
         module.hook(method).intercept(body)
     }
 
